@@ -28,7 +28,7 @@ const PROTECTED_PREFIXES = [
   "/admin",
 ];
 
-const AUTH_ROUTES = ["/login", "/register", "/forgot-password", "/reset-password"];
+const AUTH_ROUTES = ["/login", "/register"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;

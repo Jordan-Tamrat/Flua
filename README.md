@@ -366,7 +366,7 @@ Notes:
 ```
 src/
 ├── app/
-│   ├── (auth)/              login, register, forgot/reset password
+│   ├── (auth)/              login, register
 │   ├── (dashboard)/         the signed-in app
 │   ├── api/                 route handlers
 │   ├── onboarding/
