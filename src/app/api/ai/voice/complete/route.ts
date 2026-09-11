@@ -21,8 +21,10 @@ const requestSchema = z.object({
       }),
     )
     .min(1, "That conversation was empty.")
-    .max(200, "That conversation is too long to save in one go."),
-  durationSec: z.number().int().min(0).max(7200),
+    // A long unbroken call can run to several hundred turns now that sessions
+    // are no longer cut off after a few minutes.
+    .max(1000, "That conversation is too long to save in one go."),
+  durationSec: z.number().int().min(0).max(21600),
   scenarioId: z.string().max(60).optional(),
 });
 

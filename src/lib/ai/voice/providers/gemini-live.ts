@@ -36,7 +36,21 @@ const LIVE_MODEL = "gemini-2.5-flash-native-audio-latest";
 const DEFAULT_VOICE = "Aoede";
 
 /** How long the minted token stays valid overall. */
-const TOKEN_LIFETIME_MS = 30 * 60 * 1000;
+const TOKEN_LIFETIME_MS = 90 * 60 * 1000;
+
+/**
+ * Without compression, an audio session is cut off at a fixed duration (about
+ * ten minutes) once the context window fills with audio tokens — the learner is
+ * hung up on mid-sentence. Turning on a sliding window lifts that cap: when the
+ * context reaches the trigger, the oldest turns are dropped and the session
+ * simply continues.
+ *
+ * The trade-off is memory, not time. Past the window the model no longer recalls
+ * the start of the conversation, which for tutoring is a fair exchange — the
+ * full transcript is kept client-side and is what end-of-session feedback reads.
+ */
+const COMPRESSION_TRIGGER_TOKENS = "16000";
+const COMPRESSION_TARGET_TOKENS = "8000";
 
 /**
  * Window in which the browser must *start* the session. Deliberately short:
@@ -116,6 +130,11 @@ export class GeminiLiveProvider implements VoiceProvider {
               systemInstruction: config.systemInstruction,
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } },
+              },
+              // Lifts the fixed session-duration cap. See the constants above.
+              contextWindowCompression: {
+                triggerTokens: COMPRESSION_TRIGGER_TOKENS,
+                slidingWindow: { targetTokens: COMPRESSION_TARGET_TOKENS },
               },
             },
           },

@@ -237,13 +237,26 @@ contract in `src/lib/ai/voice/types.ts` (`VoiceProvider`), with the same rule �
 it safe to hand to a browser:
 
 - **Single-use** (`uses: 1`) — a replayed token is rejected.
-- **Short-lived** — valid for 30 minutes, and the session must *start* within 2 minutes.
+- **Short-lived** — valid for 90 minutes, and the session must *start* within 2 minutes.
 - **Constrained** (`liveConnectConstraints`) — the model, response modality and the
   tutor's system instruction are baked in. The client cannot swap the model or replace the
   prompt, so prompt injection is structurally impossible from the browser.
 
 The browser then connects straight to Google. That keeps latency to one hop and means the
 real `GEMINI_API_KEY` never leaves the server.
+
+### Session length
+
+Left alone, an audio session ends abruptly after roughly ten minutes: audio consumes
+context tokens quickly, and once the window fills the server simply hangs up — mid-sentence,
+from the learner's point of view.
+
+`contextWindowCompression` removes that ceiling. A sliding window is declared in the token
+constraints, so when the conversation reaches the trigger the oldest turns are dropped and
+the session continues instead of ending. The cost is memory rather than time: past the
+window the model no longer recalls how the conversation opened. For tutoring that is a fair
+trade — the full transcript is held client-side and is what end-of-session feedback reads,
+so nothing is lost from the learner's record.
 
 ### No failover
 
