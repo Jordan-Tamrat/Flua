@@ -21,6 +21,23 @@ const grammarCategorySchema = z
   )
   .catch("vocabulary-choice");
 
+/**
+ * Drops repeated entries from a model-generated list.
+ *
+ * Models repeat themselves, and the fallback above makes it likelier still:
+ * every unrecognised category collapses to `vocabulary-choice`, so two invented
+ * slugs arrive as the same one. A "practise next" list that names the same
+ * category twice is wrong on its own terms, and rendering it also duplicates
+ * React keys. Cleaning it here fixes both, once, for every consumer.
+ */
+function uniqueList<T extends z.ZodType<string>>(schema: T, max: number) {
+  return z
+    .array(schema)
+    .max(max)
+    .default([])
+    .transform((values) => [...new Set(values)]);
+}
+
 export const severitySchema = z.enum(["MINOR", "MODERATE", "MAJOR"]).catch("MODERATE");
 
 export const cefrSchema = z.enum(["A1", "A2", "B1", "B2", "C1", "C2"]);
@@ -80,8 +97,8 @@ export const vocabularyEntrySchema = z.object({
   definition: z.string().min(1).max(400),
   partOfSpeech: z.string().max(40).optional(),
   exampleSentence: z.string().max(300).optional(),
-  synonyms: z.array(z.string().max(60)).max(6).default([]),
-  antonyms: z.array(z.string().max(60)).max(6).default([]),
+  synonyms: uniqueList(z.string().max(60), 6),
+  antonyms: uniqueList(z.string().max(60), 6),
   difficulty: cefrSchema.catch("B1"),
 });
 
@@ -157,7 +174,7 @@ export const levelAssessmentSchema = z.object({
   score: z.number().min(0).max(100),
   reasoning: z.string().min(1).max(800),
   strengths: z.array(z.string().max(200)).max(5).default([]),
-  weaknesses: z.array(grammarCategorySchema).max(6).default([]),
+  weaknesses: uniqueList(grammarCategorySchema, 6),
 });
 
 export type LevelAssessment = z.infer<typeof levelAssessmentSchema>;
@@ -166,18 +183,57 @@ export type LevelAssessment = z.infer<typeof levelAssessmentSchema>;
 /*                              Session feedback                              */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A grammar mistake the learner made more than once.
+ *
+ * Single corrections tell a learner what to fix in one sentence; patterns tell
+ * them what to fix in their English. Surfacing the repeats separately is what
+ * turns a list of edits into something they can actually work on.
+ */
+export const errorPatternSchema = z.object({
+  category: grammarCategorySchema,
+  /** What the learner keeps doing, in plain language. */
+  description: z.string().min(1).max(300),
+  /** Actual phrases from the transcript showing the pattern. */
+  examples: z.array(z.string().max(300)).max(4).default([]),
+  /** How many times it came up. */
+  occurrences: z.number().int().min(1).max(50),
+  /** The rule, stated so they can apply it next time. */
+  rule: z.string().min(1).max(400),
+});
+
+export type ErrorPattern = z.infer<typeof errorPatternSchema>;
+
 export const sessionFeedbackSchema = z.object({
   /** Two to four sentences. The spec explicitly asks for brevity here. */
   assessment: z.string().min(1).max(700),
-  vocabularyUsed: z.array(z.string().max(80)).max(10).default([]),
+  vocabularyUsed: uniqueList(z.string().max(80), 10),
   naturalPhrases: z
-    .array(z.object({ phrase: z.string().max(200), note: z.string().max(240) }))
-    .max(5)
+    .array(
+      z.object({
+        /** What the learner actually said. */
+        phrase: z.string().max(200),
+        /** How a native speaker would put it. */
+        betterPhrase: z.string().max(200).optional(),
+        note: z.string().max(240),
+      }),
+    )
+    .max(6)
     .default([]),
-  corrections: z.array(correctionSchema).max(10).default([]),
-  recommendedFocus: z.array(grammarCategorySchema).max(3).default([]),
+  corrections: z.array(correctionSchema).max(12).default([]),
+  /** Repeated mistakes, grouped — the detail that makes feedback actionable. */
+  errorPatterns: z.array(errorPatternSchema).max(5).default([]),
+  recommendedFocus: uniqueList(grammarCategorySchema, 3),
   /** 0-100 — how confidently the learner communicated. */
   confidenceScore: z.number().min(0).max(100),
+  /** 0-100 grammatical accuracy across the whole conversation. */
+  grammarScore: z.number().min(0).max(100).optional(),
+  /** 0-100 range and precision of the words they reached for. */
+  vocabularyScore: z.number().min(0).max(100).optional(),
+  /** 0-100 how smoothly they kept going — hesitation, restarts, turn length. */
+  fluencyScore: z.number().min(0).max(100).optional(),
+  /** One concrete thing to carry into the next conversation. */
+  nextStep: z.string().max(300).optional(),
 });
 
 export type SessionFeedback = z.infer<typeof sessionFeedbackSchema>;
