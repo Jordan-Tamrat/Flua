@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PasswordInput } from "@/components/ui/password-input";
 import { ApiError, apiPost } from "@/lib/api/client";
 
 export function LoginForm() {
@@ -73,19 +74,10 @@ export function LoginForm() {
           </div>
 
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="password">Password</Label>
-              <Link
-                href="/forgot-password"
-                className="text-muted-foreground hover:text-foreground focus-visible:outline-ring rounded text-xs focus-visible:outline-2"
-              >
-                Forgot password?
-              </Link>
-            </div>
-            <Input
+            <Label htmlFor="password">Password</Label>
+            <PasswordInput
               id="password"
               name="password"
-              type="password"
               autoComplete="current-password"
               required
               value={password}
