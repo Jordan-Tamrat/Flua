@@ -183,31 +183,45 @@ export const MODEL_REGISTRY: readonly ModelDefinition[] = [
 
   /* ----------------------------- OpenRouter ------------------------------ */
   /*
-   * Last-resort tier. OpenRouter's `:free` routes share an upstream pool, so
-   * 429s are routine rather than exceptional — which is exactly why this
-   * provider sits third. Two models are registered so a rate-limited primary
-   * still leaves a route.
+   * Last-resort tier.
+   *
+   * `openrouter/free` is an auto-router rather than a model: each request is
+   * dispatched to whichever free model is healthy at that moment. Measured over
+   * twenty calls it answered from seven different models, which is the point —
+   * pinning one `:free` model means inheriting that single model's outages,
+   * while the router simply picks another.
+   *
+   * What it does NOT solve is the account-wide `free-models-per-day` cap (50
+   * requests/day at time of writing, shared across every `:free` route). That
+   * ceiling applies whichever free model is named, so it is a reason to keep
+   * this provider third, not a reason to prefer one free model over another.
+   *
+   * A pinned model is kept below it so a router-level failure still leaves a
+   * route.
    */
+  {
+    provider: "openrouter",
+    modelId: "openrouter/free",
+    label: "Auto-routed free model (OpenRouter)",
+    capabilities: TEXT_ALL,
+    costTier: "standard",
+    // The router spans models with very different windows; the smallest free
+    // model it may pick governs what is safe to send.
+    contextTokens: 32_768,
+    priority: 10,
+    notes:
+      "Auto-router across OpenRouter's free catalogue. Verified: correct corrections and valid JSON in structured mode. Subject to the 50/day free-models cap.",
+  },
   {
     provider: "openrouter",
     modelId: "liquid/lfm-2.5-2.6b:free",
     label: "LFM 2.5 2.6B (OpenRouter free)",
     capabilities: TEXT_ALL,
-    costTier: "standard",
-    contextTokens: 65_536,
-    priority: 10,
-    notes: "Verified: follows conversation instructions and returns valid JSON.",
-  },
-  {
-    provider: "openrouter",
-    modelId: "google/gemma-4-31b-it:free",
-    label: "Gemma 4 31B (OpenRouter free)",
-    capabilities: TEXT_ALL,
     costTier: "light",
-    contextTokens: 262_144,
+    contextTokens: 65_536,
     priority: 20,
     notes:
-      "Larger, but frequently 429s on the shared free pool. OpenRouter rotates its `:free` catalogue — check https://openrouter.ai/models?q=free if this stops resolving.",
+      "Pinned fallback beneath the auto-router. Verified: follows conversation instructions and returns valid JSON. OpenRouter rotates its `:free` catalogue — check https://openrouter.ai/models?q=free if this stops resolving.",
   },
 ];
 

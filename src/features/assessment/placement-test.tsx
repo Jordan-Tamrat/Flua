@@ -120,8 +120,8 @@ export function PlacementTest({ questions, writingPrompt }: PlacementTestProps) 
                   Where to focus
                 </h2>
                 <div className="flex flex-wrap gap-1.5">
-                  {result.weaknesses.map((slug) => (
-                    <Badge key={slug} variant="outline">
+                  {result.weaknesses.map((slug, index) => (
+                    <Badge key={`${slug}-${index}`} variant="outline">
                       {getGrammarLabel(slug)}
                     </Badge>
                   ))}

@@ -260,8 +260,8 @@ export function VocabularyView({
               {lookup.synonyms.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-muted-foreground text-xs">Similar:</span>
-                  {lookup.synonyms.map((synonym) => (
-                    <Badge key={synonym} variant="secondary">
+                  {lookup.synonyms.map((synonym, index) => (
+                    <Badge key={`${synonym}-${index}`} variant="secondary">
                       {synonym}
                     </Badge>
                   ))}

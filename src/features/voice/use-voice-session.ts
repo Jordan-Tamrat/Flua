@@ -27,6 +27,17 @@ interface SessionGrant {
   voice: string;
 }
 
+/**
+ * Sent once, the moment the socket opens, to make the tutor greet the learner.
+ *
+ * The model produces nothing until a turn is addressed to it, so a session with
+ * no opening message just sits in silence — particularly wrong after the learner
+ * has picked a roleplay scenario and is waiting to be spoken to. This text is
+ * never displayed: it is a cue to the model, not something the learner said.
+ */
+const KICKOFF_PROMPT =
+  "[The learner has just joined the call and can hear you. Greet them and open the conversation now, in one or two short sentences, then ask your first question.]";
+
 export interface VoiceSessionState {
   status: VoiceStatus;
   turns: VoiceTurn[];
@@ -241,6 +252,30 @@ export function useVoiceSession() {
         });
 
         sessionRef.current = session;
+
+        /*
+         * Make the tutor speak first.
+         *
+         * The system instruction already tells it to open the conversation, but
+         * the model generates nothing until a turn is addressed to it — so
+         * without this the session sits in silence until the learner speaks,
+         * which is backwards after they have just picked a scenario and are
+         * waiting to be spoken to.
+         *
+         * Sent here rather than in `onopen` because the session object only
+         * exists once `connect()` has resolved. The cue itself is never shown:
+         * the transcript is driven by the provider's own transcription, which
+         * covers speech only, so this text cannot leak into the UI or into the
+         * saved conversation.
+         */
+        try {
+          session.sendClientContent({
+            turns: [{ role: "user", parts: [{ text: KICKOFF_PROMPT }] }],
+            turnComplete: true,
+          });
+        } catch {
+          // Not fatal — the conversation still works, the learner just opens it.
+        }
 
         const mic = new MicCapture();
         micRef.current = mic;

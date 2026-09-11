@@ -206,8 +206,8 @@ export function ReviewSession({ onFinish }: { onFinish: () => void }) {
 
               {item.synonyms.length > 0 ? (
                 <div className="flex flex-wrap justify-center gap-1.5">
-                  {item.synonyms.map((synonym) => (
-                    <Badge key={synonym} variant="secondary">
+                  {item.synonyms.map((synonym, index) => (
+                    <Badge key={`${synonym}-${index}`} variant="secondary">
                       {synonym}
                     </Badge>
                   ))}

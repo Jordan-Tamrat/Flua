@@ -1,6 +1,7 @@
 "use client";
 
-import { AlertCircle, Loader2, Mic, MicOff, PhoneOff, Send } from "lucide-react";
+import { AlertCircle, ChevronRight, Loader2, Mic, MicOff, PhoneOff, Send } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -9,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { SessionFeedbackPanel } from "@/features/conversation/session-feedback-panel";
+import { PastSessions, type PastVoiceSession } from "@/features/voice/past-sessions";
 import { useVoiceSession } from "@/features/voice/use-voice-session";
 import type { VoiceScenario } from "@/lib/ai/prompts/voice";
 import type { SessionFeedback } from "@/lib/ai/schemas";
@@ -27,6 +29,7 @@ interface VoiceConversationProps {
   scenarios: readonly VoiceScenario[];
   voiceAvailable: boolean;
   learnerName: string;
+  pastSessions: readonly PastVoiceSession[];
 }
 
 interface CompleteResponse {
@@ -43,6 +46,7 @@ export function VoiceConversation({
   scenarios,
   voiceAvailable,
   learnerName,
+  pastSessions,
 }: VoiceConversationProps) {
   const { state, start, stop, toggleMute, sendText } = useVoiceSession();
 
@@ -50,6 +54,8 @@ export function VoiceConversation({
   const [typed, setTyped] = useState("");
   const [feedback, setFeedback] = useState<SessionFeedback | null>(null);
   const [feedbackNote, setFeedbackNote] = useState<string | null>(null);
+  /** Id of the conversation this call was saved as, so it can be linked to. */
+  const [savedId, setSavedId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -97,6 +103,7 @@ export function VoiceConversation({
         if (cancelled) return;
         setFeedback(result.feedback);
         setFeedbackNote(result.feedbackUnavailableReason ?? null);
+        setSavedId(result.conversationId);
       } catch (error) {
         if (cancelled) return;
         setSaveError(
@@ -119,6 +126,7 @@ export function VoiceConversation({
     setFeedback(null);
     setFeedbackNote(null);
     setSaveError(null);
+    setSavedId(null);
     void start({ scenarioId: scenarioId === "free-chat" ? undefined : scenarioId });
   }
 
@@ -142,7 +150,7 @@ export function VoiceConversation({
     <div className="mx-auto flex h-[calc(100dvh-3.5rem)] w-full max-w-3xl flex-col p-4 md:h-dvh md:p-8">
       {/* Setup — only before the first call */}
       {state.status === "idle" ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-8 text-center">
+        <div className="flex flex-1 flex-col items-center justify-center gap-8 overflow-y-auto py-4 text-center">
           <div className="space-y-2">
             <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">Talk with Flua</h1>
             <p className="text-muted-foreground mx-auto max-w-md text-sm">
@@ -185,6 +193,8 @@ export function VoiceConversation({
               <span className="text-xs font-medium">Call</span>
             </span>
           </Button>
+
+          <PastSessions sessions={pastSessions} />
         </div>
       ) : null}
 
@@ -374,6 +384,22 @@ export function VoiceConversation({
           ) : null}
 
           {feedback ? <SessionFeedbackPanel feedback={feedback} /> : null}
+
+          {/* Where the session went. Without this, "saved" is unverifiable. */}
+          {savedId ? (
+            <Link
+              href={`/conversation/${savedId}`}
+              className="hover:bg-muted focus-visible:outline-ring flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm transition-colors focus-visible:outline-2"
+            >
+              <span>
+                Saved to your conversations
+                <span className="text-muted-foreground block text-xs">
+                  Open it any time to reread the transcript and this feedback.
+                </span>
+              </span>
+              <ChevronRight className="text-muted-foreground size-4 shrink-0" aria-hidden />
+            </Link>
+          ) : null}
 
           <Button onClick={handleStart} className="w-full" disabled={isSaving}>
             <Mic className="size-4" aria-hidden />
