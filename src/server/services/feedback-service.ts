@@ -22,6 +22,13 @@ import { extractMemoriesFromConversation } from "@/server/services/memory-servic
 /** Below this there isn't enough material to say anything meaningful. */
 const MIN_LEARNER_MESSAGES = 3;
 
+/**
+ * How much transcript reaches the model. Generous enough that a normal
+ * conversation arrives whole, bounded so an hour-long one can't blow the
+ * context window.
+ */
+const MAX_TRANSCRIPT_CHARS = 24_000;
+
 export async function generateSessionFeedback(
   userId: string,
   conversationId: string,
@@ -52,10 +59,31 @@ export async function generateSessionFeedback(
 
   const context = await buildFeedbackContext(userId);
 
-  const transcript = messages
-    .map((message) => `${message.role === "USER" ? "Learner" : "Tutor"}: ${message.content}`)
-    .join("\n")
-    .slice(0, 8000);
+  /*
+   * Long conversations are trimmed from the front, not the back.
+   *
+   * A slice from the start threw away the end of a long call — the part the
+   * learner just spoke and best remembers. Keeping the most recent turns means
+   * a 40-minute conversation degrades into recent-history feedback rather than
+   * feedback about its opening minutes.
+   */
+  const lines = messages.map(
+    (message) => `${message.role === "USER" ? "Learner" : "Tutor"}: ${message.content}`,
+  );
+
+  let transcript = lines.join("\n");
+  if (transcript.length > MAX_TRANSCRIPT_CHARS) {
+    const kept: string[] = [];
+    let length = 0;
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (line === undefined) continue;
+      if (length + line.length + 1 > MAX_TRANSCRIPT_CHARS) break;
+      kept.unshift(line);
+      length += line.length + 1;
+    }
+    transcript = `[Earlier part of the conversation omitted.]\n${kept.join("\n")}`;
+  }
 
   const result = await getAIService().generateStructured({
     task: "session_feedback",
@@ -65,7 +93,13 @@ export async function generateSessionFeedback(
     schema: sessionFeedbackSchema,
     schemaName: "SessionFeedback",
     temperature: 0.3,
-    maxOutputTokens: 1800,
+    /*
+     * Detailed feedback on a long conversation is a large JSON object. The old
+     * 1800-token ceiling silently truncated it mid-structure, and a half-written
+     * object fails to parse — which is not a failover-eligible error, so a long
+     * call produced no feedback at all while a short one worked.
+     */
+    maxOutputTokens: 8000,
     signal,
   });
 
