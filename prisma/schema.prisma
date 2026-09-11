@@ -1,0 +1,688 @@
+// Flua — PostgreSQL schema
+//
+// Design notes
+//  * Every learner-owned table carries `userId` with a cascading FK so that a
+//    single account deletion cleans up completely.
+//  * Query patterns are dashboard-shaped ("everything for this user, recently"),
+//    so most indexes are composite on (userId, createdAt) or (userId, <status>).
+//  * Soft deletion (`deletedAt`) is used only where a learner would expect to
+//    recover content: conversations, vocabulary, writing. Analytics rows are
+//    hard-deleted with the user.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7 moved the connection URL out of the schema: it now lives in
+// `prisma.config.ts` for the CLI, and reaches the client through a driver
+// adapter (see `src/lib/db/client.ts`).
+datasource db {
+  provider = "postgresql"
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                    Enums                                   */
+/* -------------------------------------------------------------------------- */
+
+enum CefrLevel {
+  A1
+  A2
+  B1
+  B2
+  C1
+  C2
+}
+
+enum CorrectionStyle {
+  IMMEDIATE // correct within the same reply
+  PER_MESSAGE // a compact note after each learner message
+  PERIODIC // batched every few messages (default)
+  MINIMAL // only when meaning breaks down
+}
+
+enum LearningStyle {
+  CONVERSATIONAL
+  STRUCTURED
+  VISUAL
+  PRACTICE_HEAVY
+}
+
+enum ConversationMode {
+  CONVERSATION
+  TEACHER
+  GRAMMAR
+  VOCABULARY
+  WRITING
+  SPEAKING
+  DAILY_PRACTICE
+  ASSESSMENT
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum MistakeSeverity {
+  MINOR // still understandable and natural-ish
+  MODERATE // noticeably non-native
+  MAJOR // changes or obscures meaning
+}
+
+enum VocabularyStatus {
+  NEW
+  LEARNING
+  FAMILIAR
+  MASTERED
+}
+
+enum ReviewOutcome {
+  AGAIN
+  HARD
+  GOOD
+  EASY
+}
+
+enum PracticeActivityKind {
+  VOCABULARY_DRILL
+  GRAMMAR_DRILL
+  CONVERSATION
+  WRITING
+  SPEAKING
+  REVIEW
+}
+
+enum ActivityStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  SKIPPED
+}
+
+enum WritingKind {
+  JOURNAL
+  EMAIL
+  ESSAY
+  STORY
+  OPINION
+  MESSAGE
+  PROFESSIONAL
+}
+
+enum MemoryKind {
+  WEAKNESS
+  STRENGTH
+  PREFERENCE
+  GOAL
+  PERSONAL_FACT
+  RECURRING_ERROR
+}
+
+enum AIRequestType {
+  CONVERSATION
+  TEACHER
+  GRAMMAR_ANALYSIS
+  GRAMMAR_EXERCISE
+  VOCABULARY
+  WRITING_ANALYSIS
+  SPEAKING_ANALYSIS
+  TRANSCRIPTION
+  LEVEL_ASSESSMENT
+  MEMORY_EXTRACTION
+  SUMMARIZATION
+  SESSION_FEEDBACK
+}
+
+enum AIProviderEventKind {
+  SUCCESS
+  FAILOVER
+  RATE_LIMIT
+  QUOTA_EXCEEDED
+  AUTH_ERROR
+  TIMEOUT
+  NETWORK_ERROR
+  SERVER_ERROR
+  PARSE_ERROR
+  ALL_FAILED
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              Identity & profile                            */
+/* -------------------------------------------------------------------------- */
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastLoginAt  DateTime?
+
+  profile             Profile?
+  goals               LearningGoal[]
+  conversations       Conversation[]
+  grammarMistakes     GrammarMistake[]
+  vocabularyItems     VocabularyItem[]
+  vocabularyReviews   VocabularyReview[]
+  practiceSessions    PracticeSession[]
+  writingSubmissions  WritingSubmission[]
+  speakingSessions    SpeakingSession[]
+  memories            LearnerMemory[]
+  progressSnapshots   ProgressSnapshot[]
+  aiUsage             AIUsage[]
+  passwordResetTokens PasswordResetToken[]
+  grammarTopicStats   GrammarTopicStat[]
+
+  @@index([createdAt])
+  @@map("users")
+}
+
+/// Password reset architecture: tokens are stored hashed and single-use.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model Profile {
+  id     String @id @default(cuid())
+  userId String @unique
+
+  // Onboarding answers
+  selfAssessedLevel CefrLevel     @default(A2)
+  targetLevel       CefrLevel     @default(B2)
+  learningStyle     LearningStyle @default(CONVERSATIONAL)
+  dailyGoalMinutes  Int           @default(20)
+  /// 1 (very hesitant) … 5 (very confident)
+  speakingConfidence Int          @default(3)
+  interests         String[]      @default([])
+  preferredTopics   String[]      @default([])
+  nativeLanguage    String?
+
+  // System-maintained estimate — deliberately separate from the self-assessment.
+  estimatedLevel      CefrLevel @default(A2)
+  /// 0…1 confidence in `estimatedLevel`.
+  levelConfidence     Float     @default(0.2)
+  /// Continuous 0…100 score backing the CEFR band, so progress is visible
+  /// between band changes ("B1 → B1+").
+  levelScore          Float     @default(30)
+  lastLevelReviewAt   DateTime?
+
+  // Preferences
+  correctionStyle       CorrectionStyle @default(PERIODIC)
+  conversationDifficulty Int            @default(3) // 1…5
+  voiceSpeed            Float           @default(1.0)
+  theme                 String          @default("system")
+  responseStyle         String          @default("friendly") // friendly | concise | detailed
+
+  // Streak tracking
+  currentStreak     Int       @default(0)
+  longestStreak     Int       @default(0)
+  lastPracticeDate  DateTime?
+
+  onboardingCompletedAt DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("profiles")
+}
+
+model LearningGoal {
+  id          String    @id @default(cuid())
+  userId      String
+  label       String
+  description String?
+  isPrimary   Boolean   @default(false)
+  achievedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isPrimary])
+  @@map("learning_goals")
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                Conversations                               */
+/* -------------------------------------------------------------------------- */
+
+model Conversation {
+  id     String           @id @default(cuid())
+  userId String
+  mode   ConversationMode @default(CONVERSATION)
+  title  String           @default("New conversation")
+  topic  String?
+
+  /// Rolling summary of messages older than the live context window. Keeps
+  /// prompt size bounded without discarding the thread's history.
+  summary            String?
+  /// Number of messages already folded into `summary`.
+  summarizedThrough  Int      @default(0)
+  messageCount       Int      @default(0)
+
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  durationSec Int       @default(0)
+
+  /// Feedback generated when the learner ends the session.
+  feedback Json?
+
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages        ConversationMessage[]
+  grammarMistakes GrammarMistake[]
+  speakingSessions SpeakingSession[]
+
+  @@index([userId, deletedAt, updatedAt])
+  @@index([userId, mode])
+  @@map("conversations")
+}
+
+model ConversationMessage {
+  id             String      @id @default(cuid())
+  conversationId String
+  role           MessageRole
+  content        String
+
+  /// Ordinal within the conversation, 0-based. Used for summarization windows.
+  sequence Int
+
+  // Provenance — useful for the admin view and for debugging a bad reply.
+  provider  String?
+  model     String?
+  latencyMs Int?
+
+  /// Inline correction payload attached to a learner message, when the
+  /// correction style asks for it.
+  corrections Json?
+
+  createdAt DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, sequence])
+  @@index([conversationId, createdAt])
+  @@map("conversation_messages")
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                   Grammar                                  */
+/* -------------------------------------------------------------------------- */
+
+model GrammarMistake {
+  id             String  @id @default(cuid())
+  userId         String
+  conversationId String?
+
+  originalText  String
+  correctedText String
+  /// Stable slug from the grammar taxonomy, e.g. "past-simple".
+  category      String
+  explanation   String
+  example       String?
+  severity      MistakeSeverity @default(MODERATE)
+
+  /// Where it came from: conversation | writing | speaking | practice
+  source String @default("conversation")
+
+  /// Set when the learner has seen the correction in the UI.
+  acknowledgedAt DateTime?
+  createdAt      DateTime  @default(now())
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, category, createdAt])
+  @@map("grammar_mistakes")
+}
+
+/// Rolling per-category accuracy, so the dashboard and the daily plan can read
+/// strengths/weaknesses without aggregating the whole mistake table each time.
+model GrammarTopicStat {
+  id       String @id @default(cuid())
+  userId   String
+  category String
+
+  attempts      Int   @default(0)
+  correct       Int   @default(0)
+  mistakeCount  Int   @default(0)
+  /// 0…100 rolling accuracy.
+  accuracy      Float @default(0)
+  /// Accuracy at the previous snapshot, used to render a trend arrow.
+  previousAccuracy Float?
+
+  lastPracticedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, category])
+  @@index([userId, accuracy])
+  @@map("grammar_topic_stats")
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                 Vocabulary                                 */
+/* -------------------------------------------------------------------------- */
+
+model VocabularyItem {
+  id     String @id @default(cuid())
+  userId String
+
+  word            String
+  definition      String
+  partOfSpeech    String?
+  exampleSentence String?
+  translation     String?
+  synonyms        String[] @default([])
+  antonyms        String[] @default([])
+  /// CEFR-ish difficulty of the word itself.
+  difficulty      CefrLevel @default(B1)
+
+  status VocabularyStatus @default(NEW)
+
+  // Spaced-repetition state (SM-2 shaped, so a full scheduler can drop in).
+  /// Ease factor; SM-2 starts at 2.5 and floors at 1.3.
+  easeFactor     Float    @default(2.5)
+  /// Current interval in days.
+  intervalDays   Int      @default(0)
+  /// Consecutive successful reviews.
+  repetitions    Int      @default(0)
+  dueAt          DateTime @default(now())
+
+  reviewCount  Int @default(0)
+  successCount Int @default(0)
+  failureCount Int @default(0)
+
+  firstLearnedAt DateTime  @default(now())
+  lastReviewedAt DateTime?
+
+  /// Where the learner picked it up, e.g. a conversation id or "manual".
+  sourceRef String?
+
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviews VocabularyReview[]
+
+  @@unique([userId, word])
+  @@index([userId, deletedAt, dueAt])
+  @@index([userId, status])
+  @@map("vocabulary_items")
+}
+
+model VocabularyReview {
+  id               String @id @default(cuid())
+  userId           String
+  vocabularyItemId String
+
+  outcome    ReviewOutcome
+  wasCorrect Boolean
+  /// Milliseconds the learner took to answer; useful signal for retention.
+  responseMs Int?
+  /// Snapshot of the interval assigned by this review.
+  intervalDays Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vocabularyItem VocabularyItem @relation(fields: [vocabularyItemId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([vocabularyItemId, createdAt])
+  @@map("vocabulary_reviews")
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              Practice sessions                             */
+/* -------------------------------------------------------------------------- */
+
+model PracticeSession {
+  id     String @id @default(cuid())
+  userId String
+
+  /// Calendar date the session belongs to, normalized to UTC midnight, so a
+  /// learner gets one daily plan per day.
+  planDate DateTime @db.Date
+
+  /// Grammar category the day's plan is built around, when there is one.
+  focusCategory String?
+  targetMinutes Int    @default(20)
+  actualSeconds Int    @default(0)
+
+  completedAt DateTime?
+  startedAt   DateTime  @default(now())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activities PracticeActivity[]
+
+  @@unique([userId, planDate])
+  @@index([userId, createdAt])
+  @@map("practice_sessions")
+}
+
+model PracticeActivity {
+  id                String @id @default(cuid())
+  practiceSessionId String
+
+  kind          PracticeActivityKind
+  status        ActivityStatus       @default(PENDING)
+  title         String
+  description   String?
+  targetMinutes Int                  @default(5)
+  orderIndex    Int                  @default(0)
+
+  /// Activity-specific payload (drill questions, prompts, results).
+  payload Json?
+  /// 0…100 score when the activity produces one.
+  score   Float?
+
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  practiceSession PracticeSession @relation(fields: [practiceSessionId], references: [id], onDelete: Cascade)
+
+  @@index([practiceSessionId, orderIndex])
+  @@map("practice_activities")
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                   Writing                                  */
+/* -------------------------------------------------------------------------- */
+
+model WritingSubmission {
+  id     String @id @default(cuid())
+  userId String
+
+  kind       WritingKind @default(JOURNAL)
+  title      String?
+  prompt     String?
+  content    String
+  wordCount  Int         @default(0)
+
+  /// Full structured analysis, validated against a Zod schema before storage.
+  analysis Json?
+  /// Convenience copies of the headline scores for cheap dashboard queries.
+  overallScore     Float?
+  grammarScore     Float?
+  vocabularyScore  Float?
+  coherenceScore   Float?
+
+  analyzedAt DateTime?
+  deletedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, deletedAt, createdAt])
+  @@map("writing_submissions")
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                  Speaking                                  */
+/* -------------------------------------------------------------------------- */
+
+model SpeakingSession {
+  id             String  @id @default(cuid())
+  userId         String
+  conversationId String?
+
+  /// Transcript of what the learner said. Audio itself is never persisted.
+  transcript      String
+  durationSec     Int     @default(0)
+  wordCount       Int     @default(0)
+  /// Words per minute — a cheap fluency proxy computed in application code.
+  wordsPerMinute  Float?
+  /// 0…100 self/derived confidence signal.
+  confidenceScore Float?
+  /// Provider used for the transcription, for the admin view.
+  transcriptionProvider String?
+
+  analysis  Json?
+  createdAt DateTime @default(now())
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@map("speaking_sessions")
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              Long-term memory                              */
+/* -------------------------------------------------------------------------- */
+
+/// Durable, curated facts about the learner. Deliberately small: extraction is
+/// controlled and deduplicated so prompts stay short.
+model LearnerMemory {
+  id     String @id @default(cuid())
+  userId String
+
+  kind    MemoryKind
+  content String
+  /// 0…1 — how confident the extraction was.
+  confidence Float @default(0.5)
+  /// Bumped whenever the same insight is observed again; drives prompt priority.
+  reinforcementCount Int @default(1)
+
+  sourceRef String?
+  /// Memories can go stale; the extractor retires rather than deletes them.
+  retiredAt DateTime?
+
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, retiredAt, reinforcementCount])
+  @@index([userId, kind])
+  @@map("learner_memories")
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                  Progress                                  */
+/* -------------------------------------------------------------------------- */
+
+/// One row per learner per day, written by the progress engine. Trends are read
+/// from here instead of recomputing over the whole history.
+model ProgressSnapshot {
+  id     String   @id @default(cuid())
+  userId String
+  date   DateTime @db.Date
+
+  estimatedLevel CefrLevel
+  levelScore     Float
+
+  minutesPracticed     Int   @default(0)
+  conversationsCount   Int   @default(0)
+  messagesSent         Int   @default(0)
+  vocabularyLearned    Int   @default(0)
+  vocabularyReviewed   Int   @default(0)
+  mistakesMade         Int   @default(0)
+  grammarAccuracy      Float @default(0)
+  writingScore         Float?
+  speakingScore        Float?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId, date])
+  @@map("progress_snapshots")
+}
+
+/* -------------------------------------------------------------------------- */
+/*                             AI usage & telemetry                           */
+/* -------------------------------------------------------------------------- */
+
+model AIUsage {
+  id     String  @id @default(cuid())
+  userId String?
+
+  provider    String
+  model       String
+  requestType AIRequestType
+  capability  String
+
+  inputTokens  Int?
+  outputTokens Int?
+  latencyMs    Int
+
+  success          Boolean
+  fallbackTriggered Boolean @default(false)
+  /// Which provider was tried first, when a fallback happened.
+  attemptedProviders String[] @default([])
+  errorKind        String?
+
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([provider, createdAt])
+  @@index([userId, createdAt])
+  @@map("ai_usage")
+}
+
+model AIProviderEvent {
+  id       String              @id @default(cuid())
+  provider String
+  model    String?
+  kind     AIProviderEventKind
+  /// Sanitized message — never contains keys or learner content.
+  message  String
+  requestType String?
+  latencyMs   Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([provider, kind, createdAt])
+  @@map("ai_provider_events")
+}
