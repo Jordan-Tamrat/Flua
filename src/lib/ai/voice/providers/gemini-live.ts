@@ -180,6 +180,18 @@ export class GeminiLiveProvider implements VoiceProvider {
                 triggerTokens: COMPRESSION_TRIGGER_TOKENS,
                 slidingWindow: { targetTokens: COMPRESSION_TARGET_TOKENS },
               },
+              /*
+               * Deliberately NOT enabling `sessionResumption`.
+               *
+               * Resuming a dropped call would be the obvious way to survive one,
+               * and the provider does hand out resumption handles. Tested
+               * directly, though, a handle only restores the conversation when
+               * both sockets authenticate with the same long-lived API key.
+               * This browser holds a single-use ephemeral token by design, so a
+               * handle issued under one token resumes into an empty session
+               * under the next — the call continues with the tutor having
+               * forgotten everything, which is worse than ending cleanly.
+               */
             },
           },
           httpOptions: { apiVersion: API_VERSION },

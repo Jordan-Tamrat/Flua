@@ -216,6 +216,17 @@ export function VoiceConversation({
             </span>
           </div>
 
+          {/* The provider warns before hanging up; without this it looks like a bug. */}
+          {state.endingSoon ? (
+            <Alert variant="warning">
+              <AlertCircle aria-hidden />
+              <AlertDescription>
+                This call is close to its limit and will end shortly. Everything you&apos;ve said is
+                saved — start another conversation to carry on.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
           {/* Orb: who has the floor */}
           <div className="flex flex-col items-center gap-3 py-4">
             <div

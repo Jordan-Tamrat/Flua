@@ -1,7 +1,7 @@
 "use client";
 
 import { GoogleGenAI, Modality, type LiveServerMessage, type Session } from "@google/genai";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AudioPlayer, MicCapture, isVoiceSupported } from "@/lib/speech/audio-engine";
 import type { VoiceStatus, VoiceTurn } from "@/lib/ai/voice/types";
@@ -38,6 +38,14 @@ interface SessionGrant {
 const KICKOFF_PROMPT =
   "[The learner has just joined the call and can hear you. Greet them and open the conversation now, in one or two short sentences, then ask your first question.]";
 
+/**
+ * Context compression thresholds, mirroring the values the server locks into
+ * the token. Audio fills a context window quickly; without compression the
+ * session is terminated once it is full, roughly ten minutes in.
+ */
+const VOICE_COMPRESSION_TRIGGER_TOKENS = "16000";
+const VOICE_COMPRESSION_TARGET_TOKENS = "8000";
+
 export interface VoiceSessionState {
   status: VoiceStatus;
   turns: VoiceTurn[];
@@ -47,6 +55,11 @@ export interface VoiceSessionState {
   error: string | null;
   /** Seconds since the conversation connected. */
   elapsedSec: number;
+  /**
+   * The provider has warned that it is about to close the session. Shown so a
+   * cutoff is never a surprise mid-sentence.
+   */
+  endingSoon: boolean;
 }
 
 export function useVoiceSession() {
@@ -57,6 +70,7 @@ export function useVoiceSession() {
     isMuted: false,
     error: null,
     elapsedSec: 0,
+    endingSoon: false,
   });
 
   const sessionRef = useRef<Session | null>(null);
@@ -64,6 +78,13 @@ export function useVoiceSession() {
   const playerRef = useRef<AudioPlayer | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startedAtRef = useRef<number>(0);
+
+  /*
+   * Distinguishes the learner hanging up from the socket closing on its own, so
+   * an intentional stop isn't treated as a failure.
+   */
+  const stoppedRef = useRef(false);
+  const reconnectRef = useRef<(() => void) | null>(null);
 
   /** Turn ids currently being appended to, one per speaker. */
   const openTurnRef = useRef<{ user: string | null; assistant: string | null }>({
@@ -135,6 +156,18 @@ export function useVoiceSession() {
     (message: LiveServerMessage) => {
       const content = message.serverContent;
 
+      /*
+       * The server warns before it hangs up. Surfacing it turns an unexplained
+       * mid-sentence cutoff into something the learner can see coming, and
+       * records why it happened rather than leaving it to be guessed at.
+       */
+      if (message.goAway) {
+        console.warn("[voice] server signalled the session is ending", {
+          timeLeft: message.goAway.timeLeft,
+        });
+        setState((current) => ({ ...current, endingSoon: true }));
+      }
+
       // The learner started talking over the AI: drop queued speech at once, or
       // the AI keeps talking for seconds after it has stopped generating.
       if (content?.interrupted) {
@@ -163,6 +196,79 @@ export function useVoiceSession() {
     [appendTranscript, closeTurn],
   );
 
+  /** Opens the WebSocket for a call using a freshly minted grant. */
+  const openSocket = useCallback(
+    async (grant: SessionGrant): Promise<Session> => {
+      const client = new GoogleGenAI({
+        apiKey: grant.token,
+        httpOptions: { apiVersion: grant.apiVersion },
+      });
+
+      return client.live.connect({
+        model: grant.model,
+        /*
+         * The system instruction, voice and transcription settings are locked
+         * into the token, so nothing behavioural is sent from here.
+         *
+         * Context window compression is the exception, repeated deliberately.
+         * Without it a session is terminated once its context fills with audio,
+         * roughly ten minutes in. It is declared in the token's constraints too,
+         * but a config supplied at connect time can take the place of the
+         * constrained one rather than merging with it, which would silently drop
+         * compression and reinstate the cutoff. Sending it from both sides
+         * covers either behaviour.
+         */
+        config: {
+          responseModalities: [Modality.AUDIO],
+          contextWindowCompression: {
+            triggerTokens: VOICE_COMPRESSION_TRIGGER_TOKENS,
+            slidingWindow: { targetTokens: VOICE_COMPRESSION_TARGET_TOKENS },
+          },
+        },
+        callbacks: {
+          onopen: () => {
+            startedAtRef.current = Date.now();
+            setState((current) => ({ ...current, status: "listening", endingSoon: false }));
+          },
+          onmessage: handleMessage,
+          onerror: () => {
+            // Let `onclose` decide: it always follows, and reconnecting from
+            // both handlers would open two sockets for one drop.
+          },
+          onclose: () => {
+            sessionRef.current = null;
+            if (stoppedRef.current) return;
+            reconnectRef.current?.();
+          },
+        },
+      });
+    },
+    [handleMessage],
+  );
+
+  /*
+   * Ends the call when the socket closes on its own.
+   *
+   * Automatic resumption was tried here and removed. The provider does issue
+   * resumption handles, and resuming genuinely restores the conversation — but
+   * only when both sockets authenticate with the same long-lived API key.
+   * Flua's browser only ever holds a single-use ephemeral token, so a handle
+   * from one token cannot be resumed under the next one: the socket reopens,
+   * and the tutor has forgotten the entire conversation. Reconnecting into a
+   * blank session mid-sentence is worse than stopping, so the call ends and the
+   * transcript is saved instead.
+   */
+  const handleUnexpectedClose = useCallback(() => {
+    setState((current) =>
+      current.status === "error" ? current : { ...current, status: "ended", inputLevel: 0 },
+    );
+    teardown();
+  }, [teardown]);
+
+  useEffect(() => {
+    reconnectRef.current = handleUnexpectedClose;
+  }, [handleUnexpectedClose]);
+
   const start = useCallback(
     async (options: { scenarioId?: string } = {}) => {
       if (!isVoiceSupported()) {
@@ -175,6 +281,8 @@ export function useVoiceSession() {
         return;
       }
 
+      stoppedRef.current = false;
+
       setState({
         status: "requesting-mic",
         turns: [],
@@ -182,6 +290,7 @@ export function useVoiceSession() {
         isMuted: false,
         error: null,
         elapsedSec: 0,
+        endingSoon: false,
       });
 
       // Playback must be unlocked from the user gesture that started the call.
@@ -217,40 +326,7 @@ export function useVoiceSession() {
       setState((current) => ({ ...current, status: "connecting" }));
 
       try {
-        // The grant is the only credential this client ever holds.
-        const client = new GoogleGenAI({
-          apiKey: grant.token,
-          httpOptions: { apiVersion: grant.apiVersion },
-        });
-
-        const session = await client.live.connect({
-          model: grant.model,
-          // The system instruction and modalities are locked into the token, so
-          // nothing behavioural is sent from the browser.
-          config: { responseModalities: [Modality.AUDIO] },
-          callbacks: {
-            onopen: () => {
-              startedAtRef.current = Date.now();
-              setState((current) => ({ ...current, status: "listening" }));
-            },
-            onmessage: handleMessage,
-            onerror: () => {
-              teardown();
-              setState((current) => ({
-                ...current,
-                status: "error",
-                error: "The connection dropped. Start a new conversation to continue.",
-              }));
-            },
-            onclose: () => {
-              setState((current) =>
-                current.status === "error" ? current : { ...current, status: "ended" },
-              );
-              teardown();
-            },
-          },
-        });
-
+        const session = await openSocket(grant);
         sessionRef.current = session;
 
         /*
@@ -316,10 +392,13 @@ export function useVoiceSession() {
         setState((current) => ({ ...current, status: "error", error: message }));
       }
     },
-    [handleMessage, teardown],
+    [openSocket, teardown],
   );
 
   const stop = useCallback(() => {
+    // Set before teardown so the close handler treats this as intentional and
+    // doesn't try to reconnect the call the learner just ended.
+    stoppedRef.current = true;
     teardown();
     setState((current) => ({ ...current, status: "ended", inputLevel: 0 }));
   }, [teardown]);
