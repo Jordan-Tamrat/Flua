@@ -53,6 +53,39 @@ const COMPRESSION_TRIGGER_TOKENS = "16000";
 const COMPRESSION_TARGET_TOKENS = "8000";
 
 /**
+ * Language the learner's microphone is transcribed as.
+ *
+ * Left unset, the API auto-detects per utterance, and a strong accent or an
+ * unfamiliar proper noun is regularly guessed as a different language
+ * altogether — the transcript comes back as nonsense, or as script the learner
+ * never spoke. Because that transcript is what end-of-session feedback reads,
+ * a bad guess doesn't just look wrong, it silently corrupts the feedback.
+ *
+ * Pinning the input removes the guess. Flua's own speech is deliberately left on
+ * auto-detect, so if she is asked to teach a word in another language it still
+ * transcribes correctly — feedback only ever analyses the learner's turns.
+ */
+const INPUT_LANGUAGE_CODES = ["en-US"];
+
+/**
+ * Terms the general speech model reliably mangles, biasing recognition toward
+ * what learners of this app actually say. Kept short: every phrase here is a
+ * small nudge, and a long list dilutes all of them.
+ */
+const TRANSCRIPTION_VOCABULARY = [
+  "Flua",
+  "TypeScript",
+  "JavaScript",
+  "Next.js",
+  "React",
+  "Node.js",
+  "Python",
+  "Django",
+  "Lighthouse",
+  "CEFR",
+];
+
+/**
  * Window in which the browser must *start* the session. Deliberately short:
  * it bounds the damage from a token intercepted in transit, while leaving
  * enough time for a slow page load and a microphone permission prompt.
@@ -123,9 +156,20 @@ export class GeminiLiveProvider implements VoiceProvider {
             model: LIVE_MODEL,
             config: {
               responseModalities: [Modality.AUDIO],
-              // Both transcriptions are requested so the UI can show a live
-              // written record of the spoken conversation.
-              inputAudioTranscription: {},
+              /*
+               * Both transcriptions are requested so the UI can show a live
+               * written record of the spoken conversation.
+               *
+               * The asymmetry is deliberate: the learner's microphone is pinned
+               * to one language because a mis-detection there corrupts their
+               * feedback, while Flua's own speech stays auto-detected so she can
+               * say a word in another language when asked without the transcript
+               * turning to noise.
+               */
+              inputAudioTranscription: {
+                languageCodes: INPUT_LANGUAGE_CODES,
+                customVocabulary: TRANSCRIPTION_VOCABULARY,
+              },
               outputAudioTranscription: {},
               systemInstruction: config.systemInstruction,
               speechConfig: {
