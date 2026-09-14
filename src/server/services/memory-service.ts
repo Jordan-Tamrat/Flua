@@ -2,7 +2,12 @@ import "server-only";
 
 import type { MemoryKind } from "@/generated/prisma";
 import { getAIService } from "@/lib/ai/ai-service";
-import { buildMemoryExtractionPrompt, wrapConversationExcerpt } from "@/lib/ai/prompts/memory";
+import {
+  buildMemoryExtractionPrompt,
+  buildSessionRecapPrompt,
+  wrapConversationExcerpt,
+  wrapRecapTranscript,
+} from "@/lib/ai/prompts/memory";
 import { memoryExtractionSchema } from "@/lib/ai/schemas";
 import { prisma } from "@/lib/db/client";
 import { logger } from "@/lib/logger";
@@ -22,6 +27,14 @@ const MAX_ACTIVE_MEMORIES = 30;
 const MIN_CONFIDENCE = 0.6;
 /** Only extract when a session had enough substance to say anything about. */
 const MIN_MESSAGES_FOR_EXTRACTION = 6;
+/**
+ * Lower than the extraction threshold on purpose: even a couple of exchanges
+ * usually contain something worth picking up next time, and this call is the
+ * cheaper of the two.
+ */
+const MIN_MESSAGES_FOR_RECAP = 4;
+/** How much of a long conversation reaches the recap model. */
+const MAX_RECAP_TRANSCRIPT_CHARS = 6000;
 
 export async function getActiveMemories(userId: string, limit = 20) {
   return prisma.learnerMemory.findMany({
@@ -160,6 +173,102 @@ export async function extractMemoriesFromConversation(
       error: String(error),
     });
     return 0;
+  }
+}
+
+export interface GenerateRecapParams {
+  userId: string;
+  conversationId: string;
+  signal?: AbortSignal;
+}
+
+/**
+ * Writes the "what we talked about" note for a finished conversation.
+ *
+ * This is episodic memory, and it is what lets the next session open with "how
+ * did the interview go?" instead of "what would you like to talk about?".
+ * Durable *traits* are handled by `extractMemoriesFromConversation`; this
+ * records the *events*, which nothing previously did for spoken sessions.
+ *
+ * Stored on `Conversation.summary`, which already exists and sits unused for
+ * spoken sessions — the text path maintains it as a rolling compression of older
+ * turns, and the meaning is the same here: what happened in this thread.
+ *
+ * Best-effort: a missing recap costs continuity, never the learner's session.
+ */
+export async function generateSessionRecap(params: GenerateRecapParams): Promise<string | null> {
+  try {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: params.conversationId },
+      select: { userId: true, messageCount: true },
+    });
+
+    if (!conversation || conversation.userId !== params.userId) return null;
+
+    const messages = await prisma.conversationMessage.findMany({
+      where: { conversationId: params.conversationId, role: { in: ["USER", "ASSISTANT"] } },
+      orderBy: { sequence: "asc" },
+      select: { role: true, content: true },
+    });
+
+    if (messages.length < MIN_MESSAGES_FOR_RECAP) return null;
+
+    const learner = await prisma.user.findUnique({
+      where: { id: params.userId },
+      select: { name: true },
+    });
+
+    /*
+     * Trimmed from the front, keeping the most recent turns: the end of a long
+     * conversation is what the learner will remember and what is most likely to
+     * still be live next time.
+     */
+    const lines = messages.map(
+      (message) => `${message.role === "USER" ? "Learner" : "Tutor"}: ${message.content}`,
+    );
+
+    let transcript = lines.join("\n");
+    if (transcript.length > MAX_RECAP_TRANSCRIPT_CHARS) {
+      const kept: string[] = [];
+      let length = 0;
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index];
+        if (line === undefined) continue;
+        if (length + line.length + 1 > MAX_RECAP_TRANSCRIPT_CHARS) break;
+        kept.unshift(line);
+        length += line.length + 1;
+      }
+      transcript = kept.join("\n");
+    }
+
+    const result = await getAIService().generateText({
+      task: "summarization",
+      userId: params.userId,
+      system: buildSessionRecapPrompt(learner?.name ?? "the learner"),
+      messages: [{ role: "user", content: wrapRecapTranscript(transcript) }],
+      temperature: 0.4,
+      maxOutputTokens: 200,
+      signal: params.signal,
+    });
+
+    const summary = result.text.trim();
+    // A near-empty answer means the model found nothing worth remembering,
+    // which the prompt explicitly allows. Storing it would show up as a blank
+    // bullet in the next session's prompt.
+    if (summary.length < 15) return null;
+
+    await prisma.conversation.update({
+      where: { id: params.conversationId },
+      data: { summary, summarizedThrough: conversation.messageCount },
+    });
+
+    return summary;
+  } catch (error) {
+    logger.warn("Session recap failed", {
+      userId: params.userId,
+      error: String(error),
+    });
+    return null;
   }
 }
 

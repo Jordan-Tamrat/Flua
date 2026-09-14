@@ -1,6 +1,7 @@
 import "server-only";
 
-import type { LearnerContext } from "@/lib/ai/prompts/shared";
+import type { MemoryKind } from "@/generated/prisma";
+import type { LearnerContext, SessionRecall } from "@/lib/ai/prompts/shared";
 import { prisma } from "@/lib/db/client";
 import { NotFoundError } from "@/lib/errors";
 import { getGrammarLabel } from "@/lib/learning/grammar-taxonomy";
@@ -14,18 +15,86 @@ import { getGrammarLabel } from "@/lib/learning/grammar-taxonomy";
  * limits below are deliberate rather than arbitrary.
  */
 
-/** How many weaknesses/strengths/memories each task is allowed. */
+/*
+ * How much of each thing a task is allowed.
+ *
+ * Personal and language memories are budgeted separately on purpose. Ranked
+ * together by reinforcement count, grammar diagnostics win: the same error
+ * recurs every session and bumps its own score, so over time they crowd out
+ * everything that makes a conversation feel personal — and they duplicate the
+ * "Currently struggles with" line that is already in the prompt. Conversational
+ * modes therefore get mostly personal memories; analytical modes get the
+ * language ones, where they are actually the point.
+ *
+ * `sessions` is recall of past conversations, which is meaningful for talking
+ * and pure noise when analysing a piece of writing.
+ */
 const LIMITS = {
-  conversation: { weaknesses: 3, strengths: 2, memories: 5, interests: 4 },
-  teacher: { weaknesses: 4, strengths: 2, memories: 3, interests: 2 },
-  grammar: { weaknesses: 5, strengths: 3, memories: 2, interests: 2 },
-  writing: { weaknesses: 4, strengths: 3, memories: 2, interests: 2 },
-  vocabulary: { weaknesses: 2, strengths: 0, memories: 3, interests: 4 },
-  speaking: { weaknesses: 3, strengths: 2, memories: 3, interests: 3 },
-  feedback: { weaknesses: 3, strengths: 2, memories: 2, interests: 2 },
+  conversation: {
+    weaknesses: 3,
+    strengths: 2,
+    personalMemories: 6,
+    languageMemories: 1,
+    sessions: 5,
+    interests: 4,
+  },
+  teacher: {
+    weaknesses: 4,
+    strengths: 2,
+    personalMemories: 2,
+    languageMemories: 2,
+    sessions: 0,
+    interests: 2,
+  },
+  grammar: {
+    weaknesses: 5,
+    strengths: 3,
+    personalMemories: 0,
+    languageMemories: 2,
+    sessions: 0,
+    interests: 2,
+  },
+  writing: {
+    weaknesses: 4,
+    strengths: 3,
+    personalMemories: 1,
+    languageMemories: 2,
+    sessions: 0,
+    interests: 2,
+  },
+  vocabulary: {
+    weaknesses: 2,
+    strengths: 0,
+    personalMemories: 3,
+    languageMemories: 0,
+    sessions: 0,
+    interests: 4,
+  },
+  speaking: {
+    weaknesses: 3,
+    strengths: 2,
+    personalMemories: 5,
+    languageMemories: 1,
+    sessions: 5,
+    interests: 3,
+  },
+  feedback: {
+    weaknesses: 3,
+    strengths: 2,
+    personalMemories: 1,
+    languageMemories: 2,
+    sessions: 0,
+    interests: 2,
+  },
 } as const;
 
 type ContextKind = keyof typeof LIMITS;
+
+/** Memory kinds that describe the learner's English rather than the learner. */
+const LANGUAGE_KINDS: ReadonlySet<MemoryKind> = new Set<MemoryKind>([
+  "WEAKNESS",
+  "RECURRING_ERROR",
+]);
 
 interface RawLearnerData {
   name: string;
@@ -36,7 +105,9 @@ interface RawLearnerData {
   interests: string[];
   weaknesses: string[];
   strengths: string[];
-  memories: string[];
+  personalMemories: string[];
+  languageMemories: string[];
+  recentSessions: SessionRecall[];
 }
 
 /**
@@ -47,7 +118,7 @@ interface RawLearnerData {
  * is needed on the request path.
  */
 async function loadLearnerData(userId: string): Promise<RawLearnerData> {
-  const [user, topicStats, memories] = await Promise.all([
+  const [user, topicStats, memories, sessions] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -74,8 +145,24 @@ async function loadLearnerData(userId: string): Promise<RawLearnerData> {
     prisma.learnerMemory.findMany({
       where: { userId, retiredAt: null },
       orderBy: [{ reinforcementCount: "desc" }, { updatedAt: "desc" }],
-      take: 8,
-      select: { content: true },
+      // Enough to fill both buckets: ranked together, language memories
+      // otherwise occupy the whole window before a personal one is reached.
+      take: 16,
+      select: { content: true, kind: true },
+    }),
+    // What was actually talked about, most recent first — reversed below so the
+    // prompt reads oldest to newest. Covered by @@index([userId, mode]).
+    prisma.conversation.findMany({
+      where: {
+        userId,
+        deletedAt: null,
+        mode: "SPEAKING",
+        summary: { not: null },
+        endedAt: { not: null },
+      },
+      orderBy: { endedAt: "desc" },
+      take: 5,
+      select: { summary: true, endedAt: true },
     }),
   ]);
 
@@ -97,6 +184,19 @@ async function loadLearnerData(userId: string): Promise<RawLearnerData> {
 
   const interests = [...new Set([...user.profile.preferredTopics, ...user.profile.interests])];
 
+  const now = Date.now();
+  const recentSessions: SessionRecall[] = sessions
+    .filter((session) => session.summary !== null && session.endedAt !== null)
+    // Oldest first, so the most recent session is the last thing the model reads.
+    .reverse()
+    .map((session) => ({
+      summary: session.summary as string,
+      daysAgo: Math.max(
+        0,
+        Math.floor((now - (session.endedAt as Date).getTime()) / (1000 * 60 * 60 * 24)),
+      ),
+    }));
+
   return {
     name: user.name,
     estimatedLevel: user.profile.estimatedLevel,
@@ -106,7 +206,13 @@ async function loadLearnerData(userId: string): Promise<RawLearnerData> {
     interests,
     weaknesses,
     strengths,
-    memories: memories.map((memory) => memory.content),
+    personalMemories: memories
+      .filter((memory) => !LANGUAGE_KINDS.has(memory.kind))
+      .map((memory) => memory.content),
+    languageMemories: memories
+      .filter((memory) => LANGUAGE_KINDS.has(memory.kind))
+      .map((memory) => memory.content),
+    recentSessions,
   };
 }
 
@@ -120,8 +226,11 @@ function shape(data: RawLearnerData, kind: ContextKind): LearnerContext {
     difficulty: data.difficulty,
     weaknesses: data.weaknesses.slice(0, limits.weaknesses),
     strengths: data.strengths.slice(0, limits.strengths),
-    memories: data.memories.slice(0, limits.memories),
+    personalMemories: data.personalMemories.slice(0, limits.personalMemories),
+    languageMemories: data.languageMemories.slice(0, limits.languageMemories),
     interests: data.interests.slice(0, limits.interests),
+    // Kept oldest-first; taking from the end keeps the most recent sessions.
+    recentSessions: limits.sessions > 0 ? data.recentSessions.slice(-limits.sessions) : undefined,
   };
 }
 

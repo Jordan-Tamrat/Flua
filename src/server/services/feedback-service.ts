@@ -9,7 +9,6 @@ import { logger } from "@/lib/logger";
 import { buildFeedbackContext } from "@/server/services/context-builder";
 import { getOwnedConversation } from "@/server/services/conversation-service";
 import { recordCorrections } from "@/server/services/grammar-service";
-import { extractMemoriesFromConversation } from "@/server/services/memory-service";
 
 /**
  * End-of-session feedback.
@@ -110,8 +109,8 @@ export async function generateSessionFeedback(
     data: { feedback: feedback as unknown as object },
   });
 
-  // Recording corrections and extracting memories are both secondary to showing
-  // the learner their feedback, so neither is allowed to fail the request.
+  // Recording corrections is secondary to showing the learner their feedback,
+  // so it is not allowed to fail the request.
   try {
     await recordCorrections({
       userId,
@@ -123,9 +122,16 @@ export async function generateSessionFeedback(
     logger.warn("Failed to record session corrections", { userId, error: String(error) });
   }
 
-  void extractMemoriesFromConversation({ userId, conversationId }).catch((error: unknown) => {
-    logger.warn("Memory extraction failed after session", { userId, error: String(error) });
-  });
+  /*
+   * Memory extraction deliberately does NOT happen here.
+   *
+   * It used to, as a fire-and-forget call, which meant it silently never ran
+   * whenever this function threw (a session too short for feedback) or returned
+   * the cached feedback above — so a learner could hold conversations for days
+   * and have nothing remembered. It is now an explicit, awaited step at the
+   * points where a session actually ends. See `voice-session-service.ts` and
+   * `POST /api/conversations/[id]/end`.
+   */
 
   return feedback;
 }

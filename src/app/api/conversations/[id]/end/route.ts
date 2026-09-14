@@ -2,6 +2,10 @@ import { limitByUser } from "@/lib/api/guards";
 import { apiSuccess, handleAuthedRoute } from "@/lib/api/response";
 import { endConversation } from "@/server/services/conversation-service";
 import { generateSessionFeedback } from "@/server/services/feedback-service";
+import {
+  extractMemoriesFromConversation,
+  generateSessionRecap,
+} from "@/server/services/memory-service";
 import { recordProgressSnapshot } from "@/server/services/progress-service";
 
 interface RouteContext {
@@ -24,7 +28,15 @@ export async function POST(_request: Request, context: RouteContext) {
     await endConversation(id, session.userId);
     const feedback = await generateSessionFeedback(session.userId, id);
 
-    void recordProgressSnapshot(session.userId);
+    // Awaited rather than fire-and-forget: these are what Flua carries into the
+    // next conversation, and an un-awaited promise can be discarded when the
+    // serverless function freezes on return. All three swallow their own
+    // errors, so none of them can fail a session that already succeeded.
+    await Promise.allSettled([
+      generateSessionRecap({ userId: session.userId, conversationId: id }),
+      extractMemoriesFromConversation({ userId: session.userId, conversationId: id }),
+      recordProgressSnapshot(session.userId),
+    ]);
 
     return apiSuccess({ feedback });
   });

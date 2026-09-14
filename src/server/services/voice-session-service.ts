@@ -5,6 +5,10 @@ import { ValidationError } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { appendMessage, createConversation } from "@/server/services/conversation-service";
 import { generateSessionFeedback } from "@/server/services/feedback-service";
+import {
+  extractMemoriesFromConversation,
+  generateSessionRecap,
+} from "@/server/services/memory-service";
 import { addPracticeSeconds } from "@/server/services/practice-service";
 import { recordPracticeDay, recordProgressSnapshot } from "@/server/services/progress-service";
 import type { SessionFeedback } from "@/lib/ai/schemas";
@@ -120,7 +124,27 @@ export async function saveVoiceSession(
     }
   }
 
-  void recordProgressSnapshot(params.userId);
+  /*
+   * Everything Flua should carry into the next conversation is written here,
+   * awaited.
+   *
+   * This used to hang off feedback generation as a fire-and-forget call, which
+   * meant it silently did not run whenever feedback failed or came back cached —
+   * and on a serverless host the function could be frozen before an un-awaited
+   * promise ever settled. Both paths lost the session's memory entirely, which
+   * is why Flua could hold conversations for days and still greet the learner
+   * like a stranger.
+   *
+   * Run together because they are independent and both cheap (light tier), so
+   * this costs one round trip rather than three. `allSettled` because none of
+   * them may fail a session the learner has already finished; each also logs
+   * and swallows its own errors.
+   */
+  await Promise.allSettled([
+    generateSessionRecap({ userId: params.userId, conversationId: conversation.id }),
+    extractMemoriesFromConversation({ userId: params.userId, conversationId: conversation.id }),
+    recordProgressSnapshot(params.userId),
+  ]);
 
   return { conversationId: conversation.id, feedback, feedbackUnavailableReason };
 }
