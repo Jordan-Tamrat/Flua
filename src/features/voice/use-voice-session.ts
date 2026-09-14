@@ -40,11 +40,46 @@ const KICKOFF_PROMPT =
 
 /**
  * Context compression thresholds, mirroring the values the server locks into
- * the token. Audio fills a context window quickly; without compression the
- * session is terminated once it is full, roughly ten minutes in.
+ * the token. These keep the context from filling — they do not extend the
+ * session, which has its own limit (see `CONTINUATION_PROMPT`).
  */
 const VOICE_COMPRESSION_TRIGGER_TOKENS = "16000";
 const VOICE_COMPRESSION_TARGET_TOKENS = "8000";
+
+/**
+ * How many times one conversation is rolled onto a new session before it is
+ * allowed to end. Roughly an hour of talking, which is far past the point where
+ * the learner would want a break anyway.
+ */
+const MAX_CONTINUATIONS = 6;
+
+/** Learner turns carried into a continuation, newest last. */
+const CARRIED_TURNS = 10;
+
+/**
+ * Seeds a continued session with what was just being discussed.
+ *
+ * The provider caps a live session at roughly ten minutes and cannot hand its
+ * state to a new one (resumption handles only work across sockets sharing one
+ * long-lived API key, and this browser holds single-use tokens by design). So
+ * the conversation is carried across by replaying a summary of the last turns
+ * into the fresh session — imperfect next to true continuity, but it means a
+ * long conversation carries on instead of stopping dead mid-sentence.
+ */
+function buildContinuationPrompt(turns: VoiceTurn[]): string {
+  const recent = turns
+    .filter((turn) => turn.text.trim().length > 0)
+    .slice(-CARRIED_TURNS)
+    .map((turn) => `${turn.role === "USER" ? "Them" : "You"}: ${turn.text.trim()}`)
+    .join("\n");
+
+  return [
+    "[This is a continuation of a conversation you are already having with the learner — the connection was renewed, which is a technical detail they do not need to know about.",
+    "Here is what the two of you were just saying:",
+    recent,
+    "Carry straight on from here. Do not greet them again, do not introduce yourself, and never mention the connection, the session, or that anything restarted. Pick the thread back up as if nothing happened.]",
+  ].join("\n");
+}
 
 export interface VoiceSessionState {
   status: VoiceStatus;
@@ -85,6 +120,16 @@ export function useVoiceSession() {
    */
   const stoppedRef = useRef(false);
   const reconnectRef = useRef<(() => void) | null>(null);
+
+  /*
+   * State for rolling a conversation onto a new session when the provider's
+   * duration cap is reached. `turns` mirrors the transcript so the continuation
+   * prompt can be built inside a callback without depending on render state.
+   */
+  const scenarioRef = useRef<string | undefined>(undefined);
+  const continuationsRef = useRef(0);
+  const turnsRef = useRef<VoiceTurn[]>([]);
+  const elapsedBeforeRef = useRef(0);
 
   /** Turn ids currently being appended to, one per speaker. */
   const openTurnRef = useRef<{ user: string | null; assistant: string | null }>({
@@ -196,27 +241,36 @@ export function useVoiceSession() {
     [appendTranscript, closeTurn],
   );
 
-  /** Opens the WebSocket for a call using a freshly minted grant. */
+  // Mirrors the transcript into a ref so the continuation handler can read the
+  // latest turns without being recreated on every transcript update.
+  useEffect(() => {
+    turnsRef.current = state.turns;
+  }, [state.turns]);
+
+  /**
+   * Opens the WebSocket for a call using a freshly minted grant.
+   *
+   * `seed` carries a continued conversation into a new session; omitted, the
+   * session opens fresh and the tutor greets the learner.
+   */
   const openSocket = useCallback(
-    async (grant: SessionGrant): Promise<Session> => {
+    async (grant: SessionGrant, seed?: string): Promise<Session> => {
       const client = new GoogleGenAI({
         apiKey: grant.token,
         httpOptions: { apiVersion: grant.apiVersion },
       });
 
-      return client.live.connect({
+      const session = await client.live.connect({
         model: grant.model,
         /*
          * The system instruction, voice and transcription settings are locked
          * into the token, so nothing behavioural is sent from here.
          *
-         * Context window compression is the exception, repeated deliberately.
-         * Without it a session is terminated once its context fills with audio,
-         * roughly ten minutes in. It is declared in the token's constraints too,
-         * but a config supplied at connect time can take the place of the
-         * constrained one rather than merging with it, which would silently drop
-         * compression and reinstate the cutoff. Sending it from both sides
-         * covers either behaviour.
+         * Compression is repeated deliberately: it is declared in the token's
+         * constraints too, but a config supplied at connect time can take the
+         * place of the constrained one rather than merging with it. Sending it
+         * from both sides covers either behaviour. It keeps the context from
+         * filling; it does not extend the session's own duration limit.
          */
         config: {
           responseModalities: [Modality.AUDIO],
@@ -242,32 +296,84 @@ export function useVoiceSession() {
           },
         },
       });
+
+      /*
+       * Open the conversation, or pick it back up.
+       *
+       * Sent after `connect()` resolves because the session object does not
+       * exist before then. Neither cue is ever displayed: the transcript is
+       * driven by the provider's own speech transcription, so text sent this way
+       * cannot reach the UI or the saved conversation.
+       */
+      try {
+        session.sendClientContent({
+          turns: [{ role: "user", parts: [{ text: seed ?? KICKOFF_PROMPT }] }],
+          turnComplete: true,
+        });
+      } catch {
+        // Not fatal — on a fresh call the learner can simply speak first.
+      }
+
+      return session;
     },
     [handleMessage],
   );
 
   /*
-   * Ends the call when the socket closes on its own.
+   * Rolls the conversation onto a fresh session when the provider drops this
+   * one.
    *
-   * Automatic resumption was tried here and removed. The provider does issue
-   * resumption handles, and resuming genuinely restores the conversation — but
-   * only when both sockets authenticate with the same long-lived API key.
-   * Flua's browser only ever holds a single-use ephemeral token, so a handle
-   * from one token cannot be resumed under the next one: the socket reopens,
-   * and the tutor has forgotten the entire conversation. Reconnecting into a
-   * blank session mid-sentence is worse than stopping, so the call ends and the
-   * transcript is saved instead.
+   * The provider ends a live session after roughly ten minutes regardless of
+   * how much context has been used — measured directly, a silent, near-empty
+   * session is still told to go away at nine minutes. Its own resumption
+   * handles cannot carry the state across, because they only work between
+   * sockets sharing one long-lived API key and this browser holds single-use
+   * tokens by design.
+   *
+   * So the conversation is continued rather than resumed: a new session is
+   * opened and seeded with the last few turns, keeping the microphone and
+   * speaker running throughout. The learner hears a pause, not an ending.
    */
-  const handleUnexpectedClose = useCallback(() => {
-    setState((current) =>
-      current.status === "error" ? current : { ...current, status: "ended", inputLevel: 0 },
-    );
-    teardown();
-  }, [teardown]);
+  const continueSession = useCallback(async () => {
+    if (stoppedRef.current) return;
+
+    const endCall = () => {
+      setState((current) =>
+        current.status === "error" ? current : { ...current, status: "ended", inputLevel: 0 },
+      );
+      teardown();
+    };
+
+    if (continuationsRef.current >= MAX_CONTINUATIONS || turnsRef.current.length === 0) {
+      endCall();
+      return;
+    }
+
+    continuationsRef.current += 1;
+    // The clock keeps running across the join, so the saved duration reflects
+    // how long the learner actually spoke.
+    elapsedBeforeRef.current += Math.floor((Date.now() - startedAtRef.current) / 1000);
+    setState((current) => ({ ...current, status: "reconnecting" }));
+
+    const carried = buildContinuationPrompt(turnsRef.current);
+
+    try {
+      const grant = await apiPost<SessionGrant>("/api/ai/voice/session", {
+        scenarioId: scenarioRef.current,
+      });
+      if (stoppedRef.current) return;
+
+      const session = await openSocket(grant, carried);
+      sessionRef.current = session;
+    } catch (error) {
+      console.warn("[voice] could not continue the conversation", error);
+      endCall();
+    }
+  }, [openSocket, teardown]);
 
   useEffect(() => {
-    reconnectRef.current = handleUnexpectedClose;
-  }, [handleUnexpectedClose]);
+    reconnectRef.current = () => void continueSession();
+  }, [continueSession]);
 
   const start = useCallback(
     async (options: { scenarioId?: string } = {}) => {
@@ -282,6 +388,10 @@ export function useVoiceSession() {
       }
 
       stoppedRef.current = false;
+      scenarioRef.current = options.scenarioId;
+      continuationsRef.current = 0;
+      elapsedBeforeRef.current = 0;
+      turnsRef.current = [];
 
       setState({
         status: "requesting-mic",
@@ -326,32 +436,7 @@ export function useVoiceSession() {
       setState((current) => ({ ...current, status: "connecting" }));
 
       try {
-        const session = await openSocket(grant);
-        sessionRef.current = session;
-
-        /*
-         * Make the tutor speak first.
-         *
-         * The system instruction already tells it to open the conversation, but
-         * the model generates nothing until a turn is addressed to it — so
-         * without this the session sits in silence until the learner speaks,
-         * which is backwards after they have just picked a scenario and are
-         * waiting to be spoken to.
-         *
-         * Sent here rather than in `onopen` because the session object only
-         * exists once `connect()` has resolved. The cue itself is never shown:
-         * the transcript is driven by the provider's own transcription, which
-         * covers speech only, so this text cannot leak into the UI or into the
-         * saved conversation.
-         */
-        try {
-          session.sendClientContent({
-            turns: [{ role: "user", parts: [{ text: KICKOFF_PROMPT }] }],
-            turnComplete: true,
-          });
-        } catch {
-          // Not fatal — the conversation still works, the learner just opens it.
-        }
+        sessionRef.current = await openSocket(grant);
 
         const mic = new MicCapture();
         micRef.current = mic;
@@ -373,7 +458,10 @@ export function useVoiceSession() {
         timerRef.current = setInterval(() => {
           setState((current) => ({
             ...current,
-            elapsedSec: Math.floor((Date.now() - startedAtRef.current) / 1000),
+            // Time from earlier stretches is carried, so a conversation that has
+            // rolled onto a new session still shows its true total.
+            elapsedSec:
+              elapsedBeforeRef.current + Math.floor((Date.now() - startedAtRef.current) / 1000),
           }));
         }, 1000);
       } catch (error) {

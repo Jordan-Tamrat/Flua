@@ -66,7 +66,10 @@ export function VoiceConversation({
     state.status === "listening" ||
     state.status === "speaking" ||
     state.status === "connecting" ||
-    state.status === "requesting-mic";
+    state.status === "requesting-mic" ||
+    // The call is still in progress while it rolls onto a new session; dropping
+    // to the ended screen here would look like it had hung up.
+    state.status === "reconnecting";
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({
@@ -207,22 +210,29 @@ export function VoiceConversation({
                 ? "Waiting for microphone…"
                 : state.status === "connecting"
                   ? "Connecting…"
-                  : state.status === "speaking"
-                    ? "Flua is speaking"
-                    : "Listening"}
+                  : state.status === "reconnecting"
+                    ? "Reconnecting…"
+                    : state.status === "speaking"
+                      ? "Flua is speaking"
+                      : "Listening"}
             </Badge>
             <span className="text-muted-foreground font-mono text-sm tabular-nums">
               {formatDuration(state.elapsedSec)}
             </span>
           </div>
 
-          {/* The provider warns before hanging up; without this it looks like a bug. */}
-          {state.endingSoon ? (
-            <Alert variant="warning">
+          {/*
+            The provider caps each session at about ten minutes and warns first.
+            The call rolls onto a fresh session automatically, so this explains
+            the short pause rather than announcing a failure.
+          */}
+          {state.endingSoon || state.status === "reconnecting" ? (
+            <Alert variant="info">
               <AlertCircle aria-hidden />
               <AlertDescription>
-                This call is close to its limit and will end shortly. Everything you&apos;ve said is
-                saved — start another conversation to carry on.
+                {state.status === "reconnecting"
+                  ? "One moment — picking the conversation back up…"
+                  : "Reconnecting shortly to keep this conversation going. Keep talking."}
               </AlertDescription>
             </Alert>
           ) : null}
