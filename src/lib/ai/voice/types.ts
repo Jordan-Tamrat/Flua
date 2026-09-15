@@ -20,6 +20,8 @@ export const VOICE_CAPABILITIES = [
   "OUTPUT_TRANSCRIPTION",
   /** Learner can talk over the AI and it stops — essential for natural turn-taking. */
   "INTERRUPTION",
+  /** Can look things up, so answers aren't limited to the model's training data. */
+  "WEB_GROUNDING",
 ] as const;
 
 export type VoiceCapability = (typeof VOICE_CAPABILITIES)[number];

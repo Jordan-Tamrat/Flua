@@ -98,7 +98,22 @@ const CAPABILITIES: ReadonlySet<VoiceCapability> = new Set<VoiceCapability>([
   "INPUT_TRANSCRIPTION",
   "OUTPUT_TRANSCRIPTION",
   "INTERRUPTION",
+  "WEB_GROUNDING",
 ]);
+
+/**
+ * Lets the tutor look things up while talking.
+ *
+ * A conversation partner who is confidently wrong about this week's news is
+ * worse than one who says it doesn't know: the learner has no way to tell the
+ * difference, and trusting a wrong answer is how they end up repeating it.
+ * Grounding is what makes "what did United sign this season?" answerable rather
+ * than answered from a year-old snapshot.
+ *
+ * Declared in the token's constraints, so the browser cannot add tools of its
+ * own or take this one away.
+ */
+const GROUNDING_TOOLS = [{ googleSearch: {} }];
 
 export class GeminiLiveProvider implements VoiceProvider {
   private readonly apiKey: string | undefined;
@@ -180,6 +195,7 @@ export class GeminiLiveProvider implements VoiceProvider {
                 triggerTokens: COMPRESSION_TRIGGER_TOKENS,
                 slidingWindow: { targetTokens: COMPRESSION_TARGET_TOKENS },
               },
+              tools: GROUNDING_TOOLS,
               /*
                * Deliberately NOT enabling `sessionResumption`.
                *

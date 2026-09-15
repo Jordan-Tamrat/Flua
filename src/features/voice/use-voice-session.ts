@@ -278,6 +278,10 @@ export function useVoiceSession() {
             triggerTokens: VOICE_COMPRESSION_TRIGGER_TOKENS,
             slidingWindow: { targetTokens: VOICE_COMPRESSION_TARGET_TOKENS },
           },
+          // Repeated for the same reason as compression: a connect-time config
+          // can replace the token's rather than merge with it, and losing this
+          // would leave the tutor answering from stale training data.
+          tools: [{ googleSearch: {} }],
         },
         callbacks: {
           onopen: () => {
