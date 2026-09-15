@@ -3,6 +3,12 @@
 import { GoogleGenAI, Modality, type LiveServerMessage, type Session } from "@google/genai";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import {
+  VOICE_COMPRESSION_TARGET_TOKENS,
+  VOICE_COMPRESSION_TRIGGER_TOKENS,
+  VOICE_INPUT_LANGUAGE_CODES,
+  VOICE_TRANSCRIPTION_VOCABULARY,
+} from "@/lib/ai/voice/session-config";
 import { AudioPlayer, MicCapture, isVoiceSupported } from "@/lib/speech/audio-engine";
 import type { VoiceStatus, VoiceTurn } from "@/lib/ai/voice/types";
 import { ApiError, apiPost } from "@/lib/api/client";
@@ -39,22 +45,24 @@ const KICKOFF_PROMPT =
   "[The learner has just joined the call and can hear you. Greet them and open the conversation now, in one or two short sentences, then ask your first question.]";
 
 /**
- * Context compression thresholds, mirroring the values the server locks into
- * the token. These keep the context from filling — they do not extend the
- * session, which has its own limit (see `CONTINUATION_PROMPT`).
- */
-const VOICE_COMPRESSION_TRIGGER_TOKENS = "16000";
-const VOICE_COMPRESSION_TARGET_TOKENS = "8000";
-
-/**
  * How many times one conversation is rolled onto a new session before it is
  * allowed to end. Roughly an hour of talking, which is far past the point where
  * the learner would want a break anyway.
  */
 const MAX_CONTINUATIONS = 6;
 
-/** Learner turns carried into a continuation, newest last. */
-const CARRIED_TURNS = 10;
+/**
+ * How much of the conversation is carried into a continuation.
+ *
+ * The whole thing, in practice. Measured against real sessions, a full ten
+ * minutes of speech is around 7,000 characters — roughly 1,700 tokens, well
+ * inside the window and nowhere near the compression trigger. Carrying only the
+ * last few turns was needlessly cautious and meant Flua forgot most of what had
+ * just been said. This cap exists solely so an hour-long conversation that has
+ * rolled over several times cannot grow without bound; when it bites, the
+ * oldest turns are dropped and the recent ones kept.
+ */
+const MAX_CARRIED_CHARS = 20000;
 
 /**
  * Seeds a continued session with what was just being discussed.
@@ -67,17 +75,33 @@ const CARRIED_TURNS = 10;
  * long conversation carries on instead of stopping dead mid-sentence.
  */
 function buildContinuationPrompt(turns: VoiceTurn[]): string {
-  const recent = turns
+  const lines = turns
     .filter((turn) => turn.text.trim().length > 0)
-    .slice(-CARRIED_TURNS)
-    .map((turn) => `${turn.role === "USER" ? "Them" : "You"}: ${turn.text.trim()}`)
-    .join("\n");
+    .map((turn) => `${turn.role === "USER" ? "Them" : "You"}: ${turn.text.trim()}`);
+
+  // Trimmed from the front if it ever gets long, so the most recent exchanges —
+  // the ones still live in the conversation — always survive.
+  const kept: string[] = [];
+  let length = 0;
+  let truncated = false;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (line === undefined) continue;
+    if (length + line.length + 1 > MAX_CARRIED_CHARS) {
+      truncated = true;
+      break;
+    }
+    kept.unshift(line);
+    length += line.length + 1;
+  }
 
   return [
     "[This is a continuation of a conversation you are already having with the learner — the connection was renewed, which is a technical detail they do not need to know about.",
-    "Here is what the two of you were just saying:",
-    recent,
-    "Carry straight on from here. Do not greet them again, do not introduce yourself, and never mention the connection, the session, or that anything restarted. Pick the thread back up as if nothing happened.]",
+    truncated
+      ? "Here is the conversation so far, with the earliest part left out:"
+      : "Here is the whole conversation so far:",
+    kept.join("\n"),
+    "Carry straight on from here. Everything above is yours to remember: refer back to any of it as naturally as if you had just said it. Do not greet them again, do not introduce yourself, and never mention the connection, the session, or that anything restarted.]",
   ].join("\n");
 }
 
@@ -282,6 +306,17 @@ export function useVoiceSession() {
           // can replace the token's rather than merge with it, and losing this
           // would leave the tutor answering from stale training data.
           tools: [{ googleSearch: {} }],
+          /*
+           * Same reason again, and the most visible symptom of getting it
+           * wrong: omitted here, the language pin in the token is dropped and
+           * transcription falls back to auto-detection, which renders accented
+           * English as another language's script entirely.
+           */
+          inputAudioTranscription: {
+            languageCodes: VOICE_INPUT_LANGUAGE_CODES,
+            customVocabulary: VOICE_TRANSCRIPTION_VOCABULARY,
+          },
+          outputAudioTranscription: {},
         },
         callbacks: {
           onopen: () => {

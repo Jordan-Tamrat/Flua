@@ -2,6 +2,12 @@ import "server-only";
 
 import { GoogleGenAI, Modality } from "@google/genai";
 
+import {
+  VOICE_COMPRESSION_TARGET_TOKENS,
+  VOICE_COMPRESSION_TRIGGER_TOKENS,
+  VOICE_INPUT_LANGUAGE_CODES,
+  VOICE_TRANSCRIPTION_VOCABULARY,
+} from "@/lib/ai/voice/session-config";
 import type {
   VoiceCapability,
   VoiceProvider,
@@ -49,42 +55,6 @@ const TOKEN_LIFETIME_MS = 90 * 60 * 1000;
  * the start of the conversation, which for tutoring is a fair exchange — the
  * full transcript is kept client-side and is what end-of-session feedback reads.
  */
-const COMPRESSION_TRIGGER_TOKENS = "16000";
-const COMPRESSION_TARGET_TOKENS = "8000";
-
-/**
- * Language the learner's microphone is transcribed as.
- *
- * Left unset, the API auto-detects per utterance, and a strong accent or an
- * unfamiliar proper noun is regularly guessed as a different language
- * altogether — the transcript comes back as nonsense, or as script the learner
- * never spoke. Because that transcript is what end-of-session feedback reads,
- * a bad guess doesn't just look wrong, it silently corrupts the feedback.
- *
- * Pinning the input removes the guess. Flua's own speech is deliberately left on
- * auto-detect, so if she is asked to teach a word in another language it still
- * transcribes correctly — feedback only ever analyses the learner's turns.
- */
-const INPUT_LANGUAGE_CODES = ["en-US"];
-
-/**
- * Terms the general speech model reliably mangles, biasing recognition toward
- * what learners of this app actually say. Kept short: every phrase here is a
- * small nudge, and a long list dilutes all of them.
- */
-const TRANSCRIPTION_VOCABULARY = [
-  "Flua",
-  "TypeScript",
-  "JavaScript",
-  "Next.js",
-  "React",
-  "Node.js",
-  "Python",
-  "Django",
-  "Lighthouse",
-  "CEFR",
-];
-
 /**
  * Window in which the browser must *start* the session. Deliberately short:
  * it bounds the damage from a token intercepted in transit, while leaving
@@ -182,8 +152,8 @@ export class GeminiLiveProvider implements VoiceProvider {
                * turning to noise.
                */
               inputAudioTranscription: {
-                languageCodes: INPUT_LANGUAGE_CODES,
-                customVocabulary: TRANSCRIPTION_VOCABULARY,
+                languageCodes: VOICE_INPUT_LANGUAGE_CODES,
+                customVocabulary: VOICE_TRANSCRIPTION_VOCABULARY,
               },
               outputAudioTranscription: {},
               systemInstruction: config.systemInstruction,
@@ -192,8 +162,8 @@ export class GeminiLiveProvider implements VoiceProvider {
               },
               // Lifts the fixed session-duration cap. See the constants above.
               contextWindowCompression: {
-                triggerTokens: COMPRESSION_TRIGGER_TOKENS,
-                slidingWindow: { targetTokens: COMPRESSION_TARGET_TOKENS },
+                triggerTokens: VOICE_COMPRESSION_TRIGGER_TOKENS,
+                slidingWindow: { targetTokens: VOICE_COMPRESSION_TARGET_TOKENS },
               },
               tools: GROUNDING_TOOLS,
               /*
