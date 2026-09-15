@@ -14,17 +14,27 @@
  */
 
 /**
- * Language the learner's microphone is transcribed as.
+ * Languages the learner's microphone is transcribed as.
  *
- * Left unset, the API auto-detects per utterance, and accented English is
- * regularly guessed as a different language — the transcript comes back as
- * another script entirely. That transcript is what end-of-session feedback
- * reads, so a bad guess doesn't just look wrong, it corrupts the feedback.
+ * English first, then the learner's own language. Both matter:
  *
- * Only the learner's input is pinned. The tutor's own speech stays on
- * auto-detect so she can say a word in another language when asked.
+ * Left completely unset, the API auto-detects across every language it knows,
+ * and accented English is regularly guessed as something else entirely — the
+ * transcript comes back in a script the learner never spoke. That transcript is
+ * what end-of-session feedback reads, so a bad guess silently corrupts the
+ * feedback as well as looking wrong.
+ *
+ * Restricting it to English alone fixed that but broke something worth keeping:
+ * reaching for a word in your own language when you cannot find the English one
+ * is exactly how vocabulary gets learned, and "what is ውሃ in English?" is a
+ * question this app should be able to hear. Naming both languages was measured
+ * against English speech and left transcription identical — the damage came
+ * from unrestricted detection, not from offering a second option.
+ *
+ * The tutor's own speech stays on auto-detect so she can pronounce a word in
+ * either language when asked.
  */
-export const VOICE_INPUT_LANGUAGE_CODES = ["en-US"];
+export const VOICE_INPUT_LANGUAGE_CODES = ["en-US", "am-ET"];
 
 /**
  * Terms the general speech model reliably mangles, biasing recognition toward

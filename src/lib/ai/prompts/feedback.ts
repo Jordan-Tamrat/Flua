@@ -58,6 +58,12 @@ JSON object.
 - nextStep: one concrete thing to do in the next conversation, tied to what you
   just found. Not "keep practising".
 
+The learner may drop a word from their own language into a sentence, usually
+because they could not find the English one and asked for it. That is a normal
+part of learning and is NOT an error: never list it as a mistake or a wrong word
+choice. If it is worth mentioning at all, it belongs in vocabulary they are
+building, not in corrections. Judge the English around it as you normally would.
+
 Quote the learner verbatim — never invent a sentence they did not say. Judge
 only the learner's turns; your own replies are context. Never invent progress.
 If the conversation was short or thin, say the session was brief and there
