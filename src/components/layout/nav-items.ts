@@ -8,6 +8,7 @@ import {
   Mic,
   PenLine,
   Settings,
+  Target,
   type LucideIcon,
 } from "lucide-react";
 
@@ -51,6 +52,15 @@ export const NAV_ITEMS: readonly NavItem[] = [
     description: "Practise by typing instead",
     mobile: true,
   },
+  // Sits next to the two conversation modes because it is what turns a
+  // conversation into something learned rather than just something said.
+  {
+    href: "/practice",
+    label: "Fix-ups",
+    icon: Target,
+    description: "Re-do sentences you got wrong",
+    mobile: true,
+  },
   {
     href: "/teacher",
     label: "Teacher",
@@ -63,12 +73,13 @@ export const NAV_ITEMS: readonly NavItem[] = [
     icon: BookOpen,
     description: "Lessons and targeted practice",
   },
+  // Off the mobile bar to keep it to five: fix-ups earn the slot more, since
+  // they come from conversations the learner has actually had.
   {
     href: "/vocabulary",
     label: "Vocabulary",
     icon: Library,
     description: "Save and review words",
-    mobile: true,
   },
   {
     href: "/writing",

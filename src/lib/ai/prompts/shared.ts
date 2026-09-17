@@ -164,6 +164,12 @@ export interface LearnerContext {
   languageMemories: string[];
   interests: string[];
   correctionStyle: CorrectionStyle;
+  /**
+   * The learner's first language, when known. Much of what a learner gets wrong
+   * is predictable from it, so naming it lets the tutor expect the error rather
+   * than be surprised by it.
+   */
+  nativeLanguage?: string;
   /** 1…5 — how hard the conversation should push. */
   difficulty: number;
   /** What recent conversations were actually about, oldest first. */
@@ -190,6 +196,11 @@ export function renderLearnerContext(context: LearnerContext): string {
     `Language to use with them: ${levelGuidance(context.estimatedLevel)}`,
   ];
 
+  if (context.nativeLanguage) {
+    lines.push(
+      `First language: ${context.nativeLanguage}. Expect the interference that comes with it.`,
+    );
+  }
   if (context.weaknesses.length > 0) {
     lines.push(`Currently struggles with: ${context.weaknesses.join(", ")}.`);
   }

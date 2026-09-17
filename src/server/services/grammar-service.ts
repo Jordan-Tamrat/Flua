@@ -358,6 +358,19 @@ export async function generateExercises(
 
   const seenPrompts = (stat?.recentPrompts ?? []).slice(0, MAX_AVOIDED_PROMPTS);
 
+  /*
+   * The learner's own errors in this category, so the drill targets what they
+   * actually get wrong. The prompt used to receive only `category.commonMistake`
+   * — a hard-coded string, identical for every learner — which meant practising
+   * a stranger's difficulty while your own went untested.
+   */
+  const ownErrors = await prisma.grammarMistake.findMany({
+    where: { userId, category: category.slug },
+    orderBy: { createdAt: "desc" },
+    take: 5,
+    select: { originalText: true, correctedText: true },
+  });
+
   const result = await getAIService().generateStructured({
     task: "grammar_exercise",
     userId,
@@ -366,6 +379,10 @@ export async function generateExercises(
       category.slug,
       category.label,
       category.commonMistake,
+      ownErrors.map((error) => ({
+        original: error.originalText,
+        corrected: error.correctedText,
+      })),
       seenPrompts,
     ),
     messages: [{ role: "user", content: `Write practice questions for: ${category.label}.` }],

@@ -103,6 +103,7 @@ interface RawLearnerData {
   correctionStyle: LearnerContext["correctionStyle"];
   difficulty: number;
   interests: string[];
+  nativeLanguage: string | null;
   weaknesses: string[];
   strengths: string[];
   personalMemories: string[];
@@ -131,6 +132,7 @@ async function loadLearnerData(userId: string): Promise<RawLearnerData> {
             conversationDifficulty: true,
             interests: true,
             preferredTopics: true,
+            nativeLanguage: true,
           },
         },
       },
@@ -241,6 +243,7 @@ async function loadLearnerData(userId: string): Promise<RawLearnerData> {
     correctionStyle: user.profile.correctionStyle,
     difficulty: user.profile.conversationDifficulty,
     interests,
+    nativeLanguage: user.profile.nativeLanguage,
     weaknesses,
     strengths,
     personalMemories: memories
@@ -260,6 +263,7 @@ function shape(data: RawLearnerData, kind: ContextKind): LearnerContext {
     estimatedLevel: data.estimatedLevel,
     targetLevel: data.targetLevel,
     correctionStyle: data.correctionStyle,
+    nativeLanguage: data.nativeLanguage ?? undefined,
     difficulty: data.difficulty,
     weaknesses: data.weaknesses.slice(0, limits.weaknesses),
     strengths: data.strengths.slice(0, limits.strengths),

@@ -345,11 +345,27 @@ model GrammarMistake {
   acknowledgedAt DateTime?
   createdAt      DateTime  @default(now())
 
+  /// SM-2 state, so the learner's own sentences come back on a forgetting
+  /// curve instead of being displayed once and forgotten. Same algorithm as
+  /// vocabulary — see `src/lib/learning/spaced-repetition.ts`.
+  easeFactor   Float    @default(2.5)
+  intervalDays Int      @default(0)
+  repetitions  Int      @default(0)
+  dueAt        DateTime @default(now())
+  /// How many times it has been put back to the learner.
+  retestCount  Int      @default(0)
+  /// Consecutive successful retests. At 3 the item retires as learned.
+  streak       Int      @default(0)
+  /// Set when the item is finished with: learned, or dismissed as unusable
+  /// (speech-to-text noise makes a sentence that cannot be meaningfully fixed).
+  retiredAt    DateTime?
+
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
   @@index([userId, category, createdAt])
+  @@index([userId, retiredAt, dueAt])
   @@map("grammar_mistakes")
 }
 

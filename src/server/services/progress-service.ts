@@ -117,6 +117,8 @@ export interface DashboardData {
   conversationsCompleted: number;
   vocabularyLearned: number;
   vocabularyDue: number;
+  /** The learner's own recorded mistakes that are due to be retested. */
+  errorDrillsDue: number;
   weaknesses: TopicTrend[];
   strengths: TopicTrend[];
   recentMistakes: Array<{
@@ -242,9 +244,14 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     .filter((group) => group.status === "FAMILIAR" || group.status === "MASTERED")
     .reduce((total, group) => total + group._count, 0);
 
-  const vocabularyDue = await prisma.vocabularyItem.count({
-    where: { userId, deletedAt: null, dueAt: { lte: new Date() } },
-  });
+  const [vocabularyDue, errorDrillsDue] = await Promise.all([
+    prisma.vocabularyItem.count({
+      where: { userId, deletedAt: null, dueAt: { lte: new Date() } },
+    }),
+    prisma.grammarMistake.count({
+      where: { userId, retiredAt: null, dueAt: { lte: new Date() } },
+    }),
+  ]);
 
   const trends: TopicTrend[] = topicStats.map((stat) => ({
     category: stat.category,
@@ -299,6 +306,7 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     conversationsCompleted: conversationCount,
     vocabularyLearned,
     vocabularyDue,
+    errorDrillsDue,
     weaknesses,
     strengths,
     recentMistakes: recentMistakes.map((mistake) => ({
@@ -308,6 +316,7 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     recommendedActivity: recommendActivity({
       weaknesses,
       vocabularyDue,
+      errorDrillsDue,
       minutesToday,
       dailyGoalMinutes,
     }),
@@ -324,9 +333,23 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
 function recommendActivity(input: {
   weaknesses: TopicTrend[];
   vocabularyDue: number;
+  errorDrillsDue: number;
   minutesToday: number;
   dailyGoalMinutes: number;
 }): DashboardData["recommendedActivity"] {
+  /*
+   * The learner's own mistakes come first. They are the most specific evidence
+   * of what is not yet learned, and unlike a topic drill they are on a
+   * forgetting curve — waiting costs more here than anywhere else.
+   */
+  if (input.errorDrillsDue > 0) {
+    return {
+      title: `Fix ${Math.min(input.errorDrillsDue, 8)} things you said`,
+      description: "Your own sentences from recent conversations, back for another go.",
+      href: "/practice",
+    };
+  }
+
   if (input.vocabularyDue >= 5) {
     return {
       title: `Review ${input.vocabularyDue} words`,

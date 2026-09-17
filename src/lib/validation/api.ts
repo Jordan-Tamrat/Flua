@@ -123,6 +123,21 @@ export const vocabularyReviewSchema = z.object({
   responseMs: z.number().int().min(0).max(600_000).optional(),
 });
 
+/**
+ * A typed attempt at fixing one of the learner's own sentences.
+ *
+ * `action: "dismiss"` is for an item that came out of speech-to-text as
+ * nonsense and can't be fixed — it retires rather than being graded.
+ */
+export const errorDrillAttemptSchema = z.union([
+  z.object({
+    action: z.literal("attempt"),
+    answer: z.string().trim().min(1, "Type your answer first.").max(1000),
+    responseMs: z.number().int().min(0).max(600_000).optional(),
+  }),
+  z.object({ action: z.literal("dismiss") }),
+]);
+
 export const vocabularyListSchema = z.object({
   status: vocabularyStatusSchema.optional(),
   due: z.enum(["0", "1"]).optional(),
@@ -219,6 +234,12 @@ export const settingsSchema = z.object({
   interests: z.array(z.string().trim().max(40)).max(12).optional(),
   preferredTopics: z.array(z.string().trim().max(40)).max(12).optional(),
   learningStyle: learningStyleSchema.optional(),
+  /**
+   * Collected at onboarding but never previously editable or used. Knowing it
+   * lets the tutor anticipate transfer errors — an Amharic speaker's article
+   * mistakes have a different cause from a Spanish speaker's.
+   */
+  nativeLanguage: z.string().trim().max(60).optional(),
 });
 
 /* -------------------------------- Progress ------------------------------- */

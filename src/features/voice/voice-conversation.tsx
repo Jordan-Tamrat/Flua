@@ -424,6 +424,27 @@ export function VoiceConversation({
             </Link>
           ) : null}
 
+          {/*
+            Offered right after the call, which is when the sentences are still
+            in mind — retrieval is worth most closest to the moment of encoding.
+            A link rather than an inline drill: the learner has just finished
+            talking and may not want another task immediately.
+          */}
+          {feedback && feedback.corrections.length > 0 ? (
+            <Link
+              href="/practice"
+              className="border-primary/40 hover:bg-muted focus-visible:outline-ring flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm transition-colors focus-visible:outline-2"
+            >
+              <span>
+                Try fixing those yourself
+                <span className="text-muted-foreground block text-xs">
+                  The sentences above, without the answers — the part that makes them stick.
+                </span>
+              </span>
+              <ChevronRight className="text-muted-foreground size-4 shrink-0" aria-hidden />
+            </Link>
+          ) : null}
+
           <Button onClick={handleStart} className="w-full" disabled={isSaving}>
             <Mic className="size-4" aria-hidden />
             Start another conversation

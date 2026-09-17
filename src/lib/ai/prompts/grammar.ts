@@ -71,6 +71,8 @@ export function buildGrammarExercisePrompt(
   categorySlug: string,
   categoryLabel: string,
   commonMistake: string,
+  /** The learner's own recent errors in this category, verbatim. */
+  ownErrors: Array<{ original: string; corrected: string }>,
   avoidPrompts: string[],
 ): string {
   return composeSystemPrompt({
@@ -82,7 +84,17 @@ export function buildGrammarExercisePrompt(
 Write 5 multiple-choice questions on: ${categoryLabel}.
 Use the category slug "${categorySlug}" in your response.
 
-The mistake to target: ${commonMistake}
+${
+  ownErrors.length > 0
+    ? `Target what THIS learner actually gets wrong. These are real mistakes they
+have made, with the correction:
+${ownErrors.map((error) => `- "${error.original}" should be "${error.corrected}"`).join("\n")}
+
+Write questions that test the same underlying point in fresh sentences. Do not
+quote their own sentences back at them — they are practised separately — and do
+not simply reuse these situations.`
+    : `The mistake to target: ${commonMistake}`
+}
 
 Requirements:
 - Each question has 3 or 4 options, exactly one correct.
