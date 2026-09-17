@@ -51,7 +51,14 @@ export default async function DashboardLayout({ children }: { children: ReactNod
 
   return (
     <ToastProvider>
-      <div className="flex min-h-dvh flex-col md:flex-row">
+      {/*
+        Fixed to the viewport rather than growing with the page.
+        `min-h-dvh` let the row grow to the tallest child, so a long page
+        stretched the sidebar with it and scrolled the navigation off screen.
+        Pinning the shell to the viewport height and letting only `main` scroll
+        keeps the sidebar in one place whatever the content does.
+      */}
+      <div className="flex min-h-dvh flex-col md:h-dvh md:flex-row md:overflow-hidden">
         <Sidebar
           userName={user.name}
           currentStreak={user.profile.currentStreak}
@@ -59,8 +66,13 @@ export default async function DashboardLayout({ children }: { children: ReactNod
           isAdmin={isAdmin}
         />
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <main id="main-content" className="flex-1 pb-20 md:pb-0">
+        {/*
+          Scrolling moves from the page to `main` on desktop only. On mobile the
+          sidebar is a sticky header inside this same column, and an inner
+          scroller there would fight the browser's own address-bar behaviour.
+        */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <main id="main-content" className="min-h-0 flex-1 pb-20 md:overflow-y-auto md:pb-0">
             {children}
           </main>
         </div>

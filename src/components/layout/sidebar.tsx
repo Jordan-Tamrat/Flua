@@ -183,7 +183,12 @@ export function Sidebar({ userName, currentStreak, estimatedLevel, isAdmin }: Si
       ) : null}
 
       {/* Desktop sidebar */}
-      <aside className="bg-sidebar border-sidebar-border hidden w-64 shrink-0 flex-col border-r md:flex">
+      {/*
+        `h-full` against the viewport-locked shell, so the sidebar is always
+        exactly one screen tall. Its `nav` already scrolls internally, which
+        matters once the nav list is longer than a short window.
+      */}
+      <aside className="bg-sidebar border-sidebar-border hidden h-full w-64 shrink-0 flex-col border-r md:flex">
         <div className="border-sidebar-border border-b px-4 py-4">
           <Link
             href="/learn"

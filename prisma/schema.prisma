@@ -368,6 +368,11 @@ model GrammarTopicStat {
   /// Accuracy at the previous snapshot, used to render a trend arrow.
   previousAccuracy Float?
 
+  /// Question prompts recently generated for this topic, newest first. Fed back
+  /// into the next generation so "more practice" produces new questions rather
+  /// than the same obvious five.
+  recentPrompts String[] @default([])
+
   lastPracticedAt DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt

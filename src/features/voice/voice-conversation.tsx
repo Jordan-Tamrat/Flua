@@ -150,7 +150,9 @@ export function VoiceConversation({
   }
 
   return (
-    <div className="mx-auto flex h-[calc(100dvh-3.5rem)] w-full max-w-3xl flex-col p-4 md:h-dvh md:p-8">
+    /* On desktop this fills the shell's scroll area rather than measuring the
+       viewport itself, which would double-count the layout's own height. */
+    <div className="mx-auto flex h-[calc(100dvh-3.5rem)] w-full max-w-3xl flex-col p-4 md:h-full md:p-8">
       {/* Setup — only before the first call */}
       {state.status === "idle" ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-8 overflow-y-auto py-4 text-center">

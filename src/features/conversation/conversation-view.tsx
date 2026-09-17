@@ -200,7 +200,7 @@ export function ConversationView({
   }
 
   return (
-    <div className="flex h-[calc(100dvh-3.5rem)] flex-col md:h-dvh">
+    <div className="flex h-[calc(100dvh-3.5rem)] flex-col md:h-full">
       <header className="border-border flex items-center justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
           <h1 className="truncate text-sm font-semibold">

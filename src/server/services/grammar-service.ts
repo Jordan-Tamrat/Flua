@@ -218,6 +218,16 @@ export async function getTopicStats(userId: string) {
   });
 }
 
+/**
+ * How many past prompts are kept per topic, and how many are shown to the model.
+ *
+ * Kept well above the shown count so a learner who drills one topic repeatedly
+ * keeps building a longer history, while the prompt itself stays short — a long
+ * avoid-list costs tokens on every generation and dilutes the instruction.
+ */
+const MAX_REMEMBERED_PROMPTS = 40;
+const MAX_AVOIDED_PROMPTS = 15;
+
 /** Generates a drill set for a category. */
 export async function generateExercises(
   userId: string,
@@ -231,20 +241,21 @@ export async function generateExercises(
 
   const context = await buildGrammarContext(userId);
 
-  // Avoid repeating questions the learner has already answered recently.
-  const recentActivities = await prisma.practiceActivity.findMany({
-    where: {
-      kind: "GRAMMAR_DRILL",
-      practiceSession: { userId },
-    },
-    orderBy: { createdAt: "desc" },
-    take: 3,
-    select: { payload: true },
+  /*
+   * What this learner has already been asked about this topic.
+   *
+   * Previously this read `PracticeActivity` rows, which are written by the daily
+   * planner and carry no questions at all — so the avoid-list was always empty
+   * and pressing "more practice" regenerated the same obvious five questions
+   * every time. The prompts are now recorded against the topic itself when they
+   * are generated, which is the only place that actually knows them.
+   */
+  const stat = await prisma.grammarTopicStat.findUnique({
+    where: { userId_category: { userId, category: category.slug } },
+    select: { recentPrompts: true },
   });
 
-  const seenPrompts = recentActivities
-    .flatMap((activity) => extractPrompts(activity.payload))
-    .slice(0, 10);
+  const seenPrompts = (stat?.recentPrompts ?? []).slice(0, MAX_AVOIDED_PROMPTS);
 
   const result = await getAIService().generateStructured({
     task: "grammar_exercise",
@@ -274,20 +285,34 @@ export async function generateExercises(
     throw new ValidationError("We couldn't build a valid exercise. Please try again.");
   }
 
-  return { category: category.slug, questions };
-}
+  /*
+   * Remember what was just asked, newest first, so the next round avoids it.
+   * Written after validation so discarded questions don't get blacklisted, and
+   * upserted because a learner can drill a topic they have no stats row for yet.
+   *
+   * Failure here costs variety on the next attempt, never the exercise the
+   * learner is waiting for, so it is logged rather than thrown.
+   */
+  const updatedPrompts = [
+    ...questions.map((question) => question.prompt),
+    ...(stat?.recentPrompts ?? []),
+  ].slice(0, MAX_REMEMBERED_PROMPTS);
 
-function extractPrompts(payload: unknown): string[] {
-  if (typeof payload !== "object" || payload === null) return [];
-  const questions = (payload as { questions?: unknown }).questions;
-  if (!Array.isArray(questions)) return [];
-  return questions
-    .map((question) =>
-      typeof question === "object" && question !== null
-        ? (question as { prompt?: unknown }).prompt
-        : undefined,
-    )
-    .filter((prompt): prompt is string => typeof prompt === "string");
+  try {
+    await prisma.grammarTopicStat.upsert({
+      where: { userId_category: { userId, category: category.slug } },
+      create: { userId, category: category.slug, recentPrompts: updatedPrompts },
+      update: { recentPrompts: updatedPrompts },
+    });
+  } catch (error) {
+    logger.warn("Failed to record generated grammar prompts", {
+      userId,
+      category: category.slug,
+      error: String(error),
+    });
+  }
+
+  return { category: category.slug, questions };
 }
 
 /** Generates a full structured lesson for the grammar library. */

@@ -90,6 +90,9 @@ Requirements:
   makes. Obviously silly options teach nothing.
 - Vary the question format: gap-fill, choose the correct sentence, correct the
   error. Do not write five of the same shape.
+- Where a question stem would otherwise be generic ("Which sentence is
+  correct?"), make it specific enough to stand on its own, so two different
+  questions never read as the same one.
 - Sentences should be natural and about ordinary life. Use the learner's
   interests where it fits naturally.
 - 'explanation' says why the right answer is right, in one or two sentences.
@@ -97,8 +100,9 @@ Requirements:
   tested, not the words.
 ${
   avoidPrompts.length > 0
-    ? `\nDo not repeat these questions the learner has already seen:\n${avoidPrompts
-        .slice(0, 10)
+    ? `\nThe learner has already been asked the questions below. Write five DIFFERENT
+ones: new sentences, new situations, testing other aspects of this topic. Do not
+reuse these, and do not reword them slightly and present them as new.\n${avoidPrompts
         .map((prompt) => `- ${prompt}`)
         .join("\n")}`
     : ""
