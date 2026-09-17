@@ -137,10 +137,18 @@ async function loadLearnerData(userId: string): Promise<RawLearnerData> {
     }),
     prisma.grammarTopicStat.findMany({
       where: { userId },
-      // Enough rows to satisfy the largest limit at either end of the ranking.
-      orderBy: { accuracy: "asc" },
-      take: 12,
-      select: { category: true, accuracy: true, attempts: true, mistakeCount: true },
+      // Ranked in code: a weakness can come from either evidence source, and
+      // neither column orders the other correctly on its own.
+      take: 24,
+      select: {
+        category: true,
+        accuracy: true,
+        attempts: true,
+        mistakeCount: true,
+        errorRate: true,
+        recentErrors: true,
+        recentExposure: true,
+      },
     }),
     prisma.learnerMemory.findMany({
       where: { userId, retiredAt: null },
@@ -170,17 +178,46 @@ async function loadLearnerData(userId: string): Promise<RawLearnerData> {
     throw new NotFoundError("We couldn't load your learner profile.");
   }
 
-  // A topic needs some evidence behind it before it counts as a weakness.
-  const meaningful = topicStats.filter((stat) => stat.attempts >= 3 || stat.mistakeCount >= 2);
+  /*
+   * Two independent kinds of evidence, ranked separately and then merged.
+   *
+   * Conversation gives an error *rate* per hundred words — it has a denominator
+   * but no notion of a right answer. Drills give a *percentage* — a real score,
+   * but only over questions the learner chose to answer. Averaging them would
+   * be meaningless, so each is thresholded on its own terms and the worst of
+   * both lists is what reaches the prompt.
+   */
+  const ratedWeak = topicStats
+    .filter((stat) => stat.errorRate !== null && stat.errorRate >= 0.8)
+    .sort((a, b) => (b.errorRate ?? 0) - (a.errorRate ?? 0));
 
-  const weaknesses = meaningful
-    .filter((stat) => stat.accuracy < 70)
-    .map((stat) => getGrammarLabel(stat.category));
+  const drilledWeak = topicStats
+    .filter((stat) => stat.attempts >= 5 && stat.accuracy < 70)
+    .sort((a, b) => a.accuracy - b.accuracy);
 
-  const strengths = [...meaningful]
-    .filter((stat) => stat.accuracy >= 85)
-    .sort((a, b) => b.accuracy - a.accuracy)
-    .map((stat) => getGrammarLabel(stat.category));
+  const weaknesses = [
+    ...new Set([...ratedWeak, ...drilledWeak].map((stat) => getGrammarLabel(stat.category))),
+  ];
+
+  /*
+   * A strength has to be earned. Requiring zero errors — not merely few — keeps
+   * out the case where one slip across thousands of words produces a tiny rate
+   * that looks like mastery; a single observed failure is not evidence of
+   * getting something right, just of rarely being wrong about it.
+   */
+  const strengths = [
+    ...new Set(
+      [
+        ...topicStats.filter(
+          (stat) =>
+            stat.recentExposure >= 400 && stat.errorRate !== null && stat.recentErrors === 0,
+        ),
+        ...topicStats
+          .filter((stat) => stat.attempts >= 5 && stat.accuracy >= 85)
+          .sort((a, b) => b.accuracy - a.accuracy),
+      ].map((stat) => getGrammarLabel(stat.category)),
+    ),
+  ];
 
   const interests = [...new Set([...user.profile.preferredTopics, ...user.profile.interests])];
 

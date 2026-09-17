@@ -115,15 +115,22 @@ export async function getOrCreateTodaysPlan(userId: string) {
 
   if (existing) return existing;
 
-  const [profile, weakest, dueWordCount] = await Promise.all([
+  const [profile, candidates, dueWordCount] = await Promise.all([
     prisma.profile.findUnique({
       where: { userId },
       select: { dailyGoalMinutes: true },
     }),
-    prisma.grammarTopicStat.findFirst({
-      where: { userId, OR: [{ attempts: { gte: 3 } }, { mistakeCount: { gte: 2 } }] },
-      orderBy: { accuracy: "asc" },
-      select: { category: true, accuracy: true },
+    /*
+     * Candidates for today's focus, ranked in code. Conversation evidence is an
+     * error rate and drill evidence is a percentage; picking the "worst" needs
+     * both compared on their own scales rather than sorted by one column.
+     */
+    prisma.grammarTopicStat.findMany({
+      where: {
+        userId,
+        OR: [{ attempts: { gte: 5 } }, { errorRate: { not: null } }],
+      },
+      select: { category: true, accuracy: true, attempts: true, errorRate: true },
     }),
     prisma.vocabularyItem.count({
       where: { userId, deletedAt: null, dueAt: { lte: new Date() } },
@@ -131,8 +138,21 @@ export async function getOrCreateTodaysPlan(userId: string) {
   ]);
 
   const dailyGoalMinutes = profile?.dailyGoalMinutes ?? 20;
-  // Only treat a topic as "the focus" if it's genuinely shaky.
-  const focusCategory = weakest && weakest.accuracy < 75 ? weakest.category : null;
+
+  /*
+   * Prefer what the learner actually gets wrong when speaking over what they
+   * score in drills: conversation is where the language has to work, and a
+   * topic can look fine in multiple choice while still failing out loud.
+   */
+  const worstSpoken = candidates
+    .filter((stat) => stat.errorRate !== null && stat.errorRate >= 0.8)
+    .sort((a, b) => (b.errorRate ?? 0) - (a.errorRate ?? 0))[0];
+
+  const worstDrilled = candidates
+    .filter((stat) => stat.attempts >= 5 && stat.accuracy < 75)
+    .sort((a, b) => a.accuracy - b.accuracy)[0];
+
+  const focusCategory = (worstSpoken ?? worstDrilled)?.category ?? null;
 
   const planned = planActivities({ dailyGoalMinutes, focusCategory, dueWordCount });
 

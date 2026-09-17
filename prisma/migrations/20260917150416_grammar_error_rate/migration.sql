@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "grammar_topic_stats" ADD COLUMN     "errorRate" DOUBLE PRECISION,
+ADD COLUMN     "recentErrors" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "recentExposure" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "windowStartedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;

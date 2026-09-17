@@ -21,9 +21,15 @@ export function GrammarLibrary({ stats }: { stats: TopicTrend[] }) {
     const stat = statsBySlug.get(category.slug);
     return stat?.hasEnoughData;
   }).sort((a, b) => {
-    const aStat = statsBySlug.get(a.slug)?.accuracy ?? 100;
-    const bStat = statsBySlug.get(b.slug)?.accuracy ?? 100;
-    return aStat - bStat;
+    // Worst first, on whichever evidence exists. An error rate outranks a drill
+    // score: what goes wrong in real speech matters more than a quiz result.
+    const rank = (slug: string) => {
+      const stat = statsBySlug.get(slug);
+      if (!stat) return 1000;
+      if (stat.errorRate !== null) return -stat.errorRate;
+      return stat.accuracy;
+    };
+    return rank(a.slug) - rank(b.slug);
   });
 
   const withoutData = GRAMMAR_CATEGORIES.filter(
@@ -119,19 +125,36 @@ function TopicCard({
 
           {stat?.hasEnoughData ? (
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">{stat.attempts} attempts</span>
-                <span className="flex items-center gap-1 font-medium">
-                  {TrendIcon ? <TrendIcon className="size-3" aria-hidden /> : null}
-                  {stat.accuracy}%
-                </span>
-              </div>
-              <Progress
-                value={stat.accuracy}
-                className="h-1.5"
-                aria-label={`${stat.accuracy}% accurate on ${label}`}
-                indicatorClassName={stat.accuracy < 70 ? "bg-warning" : undefined}
-              />
+              {/*
+                A drill score gets a progress bar because it is a score out of
+                100. An error rate does not — filling a bar to "0.8" would imply
+                a near-empty measure of something that is actually quite good.
+              */}
+              {stat.attempts >= 5 ? (
+                <>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">{stat.attempts} attempts</span>
+                    <span className="flex items-center gap-1 font-medium">
+                      {TrendIcon ? <TrendIcon className="size-3" aria-hidden /> : null}
+                      {stat.accuracy}%
+                    </span>
+                  </div>
+                  <Progress
+                    value={stat.accuracy}
+                    className="h-1.5"
+                    aria-label={`${stat.accuracy}% accurate on ${label}`}
+                    indicatorClassName={stat.accuracy < 70 ? "bg-warning" : undefined}
+                  />
+                </>
+              ) : (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">When you speak</span>
+                  <span className="flex items-center gap-1 font-medium">
+                    {TrendIcon ? <TrendIcon className="size-3" aria-hidden /> : null}
+                    {stat.errorRate}/100 words
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <span className="text-muted-foreground inline-flex items-center gap-1 text-xs">

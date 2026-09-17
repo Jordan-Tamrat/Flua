@@ -85,6 +85,16 @@ export interface TopicTrend {
   label: string;
   accuracy: number;
   attempts: number;
+  /**
+   * Slips per 100 words when speaking, or null if there isn't enough speech.
+   *
+   * Kept separate from `accuracy` on purpose: one is a rate out of the
+   * learner's own output, the other a score over marked questions. Blending
+   * them is what made a single slip read as "0% accurate".
+   */
+  errorRate: number | null;
+  /** Words produced while `errorRate` was measured. */
+  exposure: number;
   /** "improving" | "steady" | "needs-practice" — a direction, not a number. */
   trend: "improving" | "steady" | "declining";
   /** Whether there is enough data to say anything at all. */
@@ -196,13 +206,14 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     }),
     prisma.grammarTopicStat.findMany({
       where: { userId },
-      orderBy: { accuracy: "asc" },
       select: {
         category: true,
         accuracy: true,
         previousAccuracy: true,
         attempts: true,
         mistakeCount: true,
+        errorRate: true,
+        recentExposure: true,
       },
     }),
     prisma.grammarMistake.findMany({
@@ -240,15 +251,33 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     label: getGrammarLabel(stat.category),
     accuracy: Math.round(stat.accuracy),
     attempts: stat.attempts,
+    errorRate: stat.errorRate,
+    exposure: stat.recentExposure,
     trend: toTrend(stat.accuracy, stat.previousAccuracy, stat.attempts),
-    hasEnoughData: stat.attempts >= 3 || stat.mistakeCount >= 2,
+    // Either kind of evidence will do, but one slip on its own is not evidence.
+    hasEnoughData: stat.attempts >= 5 || stat.errorRate !== null,
   }));
 
-  const weaknesses = trends
-    .filter((trend) => trend.hasEnoughData && trend.accuracy < 70)
+  // Ranked worst-first within each kind of evidence, then merged — see the same
+  // reasoning in `context-builder.ts`.
+  const weaknesses = [
+    ...trends
+      .filter((trend) => trend.errorRate !== null && trend.errorRate >= 0.8)
+      .sort((a, b) => (b.errorRate ?? 0) - (a.errorRate ?? 0)),
+    ...trends
+      .filter((trend) => trend.attempts >= 5 && trend.accuracy < 70)
+      .sort((a, b) => a.accuracy - b.accuracy),
+  ]
+    .filter((trend, index, all) => all.findIndex((t) => t.category === trend.category) === index)
     .slice(0, 4);
+
+  // Zero errors, not merely few — see the same reasoning in `context-builder.ts`.
   const strengths = trends
-    .filter((trend) => trend.hasEnoughData && trend.accuracy >= 85)
+    .filter(
+      (trend) =>
+        (trend.exposure >= 400 && trend.errorRate === 0) ||
+        (trend.attempts >= 5 && trend.accuracy >= 85),
+    )
     .sort((a, b) => b.accuracy - a.accuracy)
     .slice(0, 3);
 
@@ -308,9 +337,17 @@ function recommendActivity(input: {
 
   const weakest = input.weaknesses[0];
   if (weakest) {
+    // Describe it with whichever evidence actually exists, in that evidence's
+    // own units — quoting a drill percentage for a topic never drilled was how
+    // a single slip came to read as "0% accurate".
+    const evidence =
+      weakest.errorRate !== null
+        ? `This is costing you the most when you speak — about ${weakest.errorRate} slips every 100 words.`
+        : `This is the area costing you the most right now (${weakest.accuracy}% in practice).`;
+
     return {
       title: `Practise ${weakest.label.toLowerCase()}`,
-      description: `This is the area costing you the most right now (${weakest.accuracy}% accurate).`,
+      description: evidence,
       href: `/grammar/${weakest.category}`,
     };
   }
@@ -381,6 +418,11 @@ export async function recordProgressSnapshot(userId: string): Promise<void> {
 
   if (!profile) return;
 
+  /*
+   * Weighted by attempts, which counts drills only — so this is genuinely
+   * "accuracy when tested", and stays 0 for a learner who has only ever talked.
+   * Their spoken progress shows as error rate on the dashboard instead.
+   */
   const totalAttempts = topicStats.reduce((sum, stat) => sum + stat.attempts, 0);
   const weightedAccuracy =
     totalAttempts > 0
@@ -475,6 +517,8 @@ export async function getProgressOverview(userId: string, days: number): Promise
           previousAccuracy: true,
           attempts: true,
           mistakeCount: true,
+          errorRate: true,
+          recentExposure: true,
         },
       }),
       prisma.conversation.aggregate({
@@ -516,8 +560,10 @@ export async function getProgressOverview(userId: string, days: number): Promise
       label: getGrammarLabel(stat.category),
       accuracy: Math.round(stat.accuracy),
       attempts: stat.attempts,
+      errorRate: stat.errorRate,
+      exposure: stat.recentExposure,
       trend: toTrend(stat.accuracy, stat.previousAccuracy, stat.attempts),
-      hasEnoughData: stat.attempts >= 3 || stat.mistakeCount >= 2,
+      hasEnoughData: stat.attempts >= 5 || stat.errorRate !== null,
     })),
     totals: {
       totalMinutes: Math.round((conversations._sum.durationSec ?? 0) / 60),

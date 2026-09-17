@@ -23,6 +23,8 @@ export default async function GrammarPage() {
         label: getGrammarLabel(stat.category),
         accuracy: Math.round(stat.accuracy),
         attempts: stat.attempts,
+        errorRate: stat.errorRate,
+        exposure: stat.recentExposure,
         trend:
           stat.previousAccuracy === null || stat.attempts < 5
             ? "steady"
@@ -31,7 +33,7 @@ export default async function GrammarPage() {
               : stat.accuracy - stat.previousAccuracy <= -5
                 ? "declining"
                 : "steady",
-        hasEnoughData: stat.attempts >= 3 || stat.mistakeCount >= 2,
+        hasEnoughData: stat.attempts >= 5 || stat.errorRate !== null,
       }))}
     />
   );

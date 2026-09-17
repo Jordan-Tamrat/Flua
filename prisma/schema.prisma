@@ -360,13 +360,28 @@ model GrammarTopicStat {
   userId   String
   category String
 
+  /// Objective practice only — drills with a right answer. Conversation must
+  /// never write these: counting errors without counting correct usage turns
+  /// "accuracy" into an error tally, which is what `errorRate` below is for.
   attempts      Int   @default(0)
   correct       Int   @default(0)
   mistakeCount  Int   @default(0)
-  /// 0…100 rolling accuracy.
+  /// 0…100 accuracy over drills. Meaningless until `attempts` is non-zero.
   accuracy      Float @default(0)
   /// Accuracy at the previous snapshot, used to render a trend arrow.
   previousAccuracy Float?
+
+  /// Conversation-derived, over a rolling window: errors seen in this category.
+  recentErrors    Int      @default(0)
+  /// Learner words produced while those errors were counted — the denominator.
+  /// Accrues for every category with history, so a session with no errors in a
+  /// category is evidence *for* it rather than silence.
+  recentExposure  Int      @default(0)
+  /// Errors per 100 learner words. Null until there is enough exposure to mean
+  /// anything. Lower is better — this is a rate, never a percentage score.
+  errorRate       Float?
+  /// Window anchor. Counts decay from here so old errors stop weighing forever.
+  windowStartedAt DateTime @default(now())
 
   /// Question prompts recently generated for this topic, newest first. Fed back
   /// into the next generation so "more practice" produces new questions rather

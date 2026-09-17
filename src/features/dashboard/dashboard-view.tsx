@@ -42,13 +42,28 @@ function TrendRow({ topic }: { topic: TopicTrend }) {
   const presentation = TREND_PRESENTATION[topic.trend];
   const Icon = presentation.icon;
 
+  /*
+   * Shown in the units the evidence is actually in. A topic seen only in
+   * conversation has an error rate and no score; quoting "0%" for it — which is
+   * what this did — reads as total failure when it may mean one slip.
+   */
+  const measure =
+    topic.errorRate !== null
+      ? { text: `${topic.errorRate}/100 words`, description: "slips per hundred words" }
+      : topic.attempts >= 5
+        ? { text: `${topic.accuracy}%`, description: "accurate in practice" }
+        : null;
+
   return (
     <li className="flex items-center justify-between gap-3 py-2">
       <span className="min-w-0 flex-1 truncate text-sm">{topic.label}</span>
       <span className={`flex items-center gap-1.5 text-xs font-medium ${presentation.className}`}>
         <Icon className="size-3.5" aria-hidden />
-        {topic.accuracy}%
-        <span className="sr-only"> accurate, {presentation.label.toLowerCase()}</span>
+        {measure ? measure.text : "not enough yet"}
+        <span className="sr-only">
+          {measure ? ` ${measure.description}, ` : " "}
+          {presentation.label.toLowerCase()}
+        </span>
       </span>
     </li>
   );

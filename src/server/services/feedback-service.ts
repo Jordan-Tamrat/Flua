@@ -109,6 +109,16 @@ export async function generateSessionFeedback(
     data: { feedback: feedback as unknown as object },
   });
 
+  /*
+   * How much the learner actually said, which is the denominator for error
+   * rate. Counted here in code rather than asked of the model: it is exact,
+   * free, and the transcript is already loaded.
+   */
+  const exposureWords = learnerMessages.reduce(
+    (total, message) => total + message.content.split(/\s+/).filter(Boolean).length,
+    0,
+  );
+
   // Recording corrections is secondary to showing the learner their feedback,
   // so it is not allowed to fail the request.
   try {
@@ -117,6 +127,7 @@ export async function generateSessionFeedback(
       corrections: feedback.corrections,
       source: "conversation",
       conversationId,
+      exposureWords,
     });
   } catch (error) {
     logger.warn("Failed to record session corrections", { userId, error: String(error) });

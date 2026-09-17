@@ -105,11 +105,26 @@ interface RecordCorrectionsParams {
   corrections: Correction[];
   source: string;
   conversationId?: string;
+  /**
+   * Words the learner produced in the text these corrections came from.
+   *
+   * This is the denominator. Without it, three errors in a two-sentence reply
+   * and three errors in an hour of talking look identical.
+   */
+  exposureWords?: number;
 }
 
 /**
- * Persists corrections and updates the per-category rolling stats that the
- * dashboard and daily plan read.
+ * Persists corrections and updates the per-category stats the dashboard and
+ * daily plan read.
+ *
+ * Corrections deliberately do NOT touch `attempts`/`correct`/`accuracy`. They
+ * used to, as `{ attempts: mistakes, correct: 0 }` — counting every error and no
+ * correct usage, so a category the learner mostly got right still read 0%. That
+ * number then chose what to practise, what the prompt called a weakness, and
+ * which way the level moved. Conversation now feeds `errorRate` instead, which
+ * has a real denominator; `accuracy` belongs to drills, where a wrong answer is
+ * actually observed rather than inferred from silence.
  */
 export async function recordCorrections(params: RecordCorrectionsParams): Promise<void> {
   if (params.corrections.length === 0) return;
@@ -133,13 +148,97 @@ export async function recordCorrections(params: RecordCorrectionsParams): Promis
     byCategory.set(correction.category, (byCategory.get(correction.category) ?? 0) + 1);
   }
 
-  for (const [category, mistakes] of byCategory) {
-    await bumpTopicStat(params.userId, category, { attempts: mistakes, correct: 0 });
+  await recordErrorPressure(params.userId, byCategory, params.exposureWords ?? 0);
+}
+
+/** Below this, a rate computed from the window would be noise rather than signal. */
+const MIN_EXPOSURE_FOR_RATE = 150;
+
+/** How long a window runs before its counts are halved. */
+const WINDOW_DAYS = 30;
+
+/**
+ * Records conversation-derived error pressure: errors per 100 learner words.
+ *
+ * Exposure accrues for every category the learner already has history in, not
+ * only the ones that went wrong this time. That is where the evidence of
+ * *correct* usage comes from — four hundred words with no article mistakes says
+ * something about articles, and it costs nothing to count.
+ */
+export async function recordErrorPressure(
+  userId: string,
+  errorsByCategory: Map<string, number>,
+  exposureWords: number,
+): Promise<void> {
+  const existing = await prisma.grammarTopicStat.findMany({
+    where: { userId },
+    select: {
+      category: true,
+      recentErrors: true,
+      recentExposure: true,
+      windowStartedAt: true,
+    },
+  });
+
+  const known = new Map(existing.map((row) => [row.category, row]));
+  const categories = new Set<string>([...known.keys(), ...errorsByCategory.keys()]);
+  const now = Date.now();
+
+  for (const category of categories) {
+    const prior = known.get(category);
+    const newErrors = errorsByCategory.get(category) ?? 0;
+
+    /*
+     * Halve both counts once the window is old, rather than clearing them. The
+     * signal fades instead of vanishing, so a topic fixed months ago stops
+     * dominating while a persistent one still shows through.
+     */
+    const windowStartedAt = prior?.windowStartedAt ?? new Date();
+    const windowAgeDays = (now - windowStartedAt.getTime()) / (1000 * 60 * 60 * 24);
+    const decayed = windowAgeDays > WINDOW_DAYS;
+
+    const baseErrors = decayed
+      ? Math.floor((prior?.recentErrors ?? 0) / 2)
+      : (prior?.recentErrors ?? 0);
+    const baseExposure = decayed
+      ? Math.floor((prior?.recentExposure ?? 0) / 2)
+      : (prior?.recentExposure ?? 0);
+
+    const recentErrors = baseErrors + newErrors;
+    const recentExposure = baseExposure + exposureWords;
+    const errorRate =
+      recentExposure >= MIN_EXPOSURE_FOR_RATE
+        ? Math.round((recentErrors / recentExposure) * 100 * 100) / 100
+        : null;
+
+    await prisma.grammarTopicStat.upsert({
+      where: { userId_category: { userId, category } },
+      create: {
+        userId,
+        category,
+        recentErrors,
+        recentExposure,
+        errorRate,
+        mistakeCount: newErrors,
+        windowStartedAt: decayed ? new Date() : windowStartedAt,
+      },
+      update: {
+        recentErrors,
+        recentExposure,
+        errorRate,
+        mistakeCount: { increment: newErrors },
+        ...(decayed ? { windowStartedAt: new Date() } : {}),
+      },
+    });
   }
 }
 
 /**
- * Updates a category's rolling accuracy.
+ * Updates a category's drill accuracy.
+ *
+ * Only callers with an objectively marked answer may use this — grammar drills
+ * and error drills. Conversation goes through `recordErrorPressure` instead,
+ * because an error observed in free speech has no denominator of its own.
  *
  * `previousAccuracy` is snapshotted before the change so the UI can show a
  * trend arrow without keeping a full time series per category.
@@ -213,6 +312,8 @@ export async function getTopicStats(userId: string) {
       mistakeCount: true,
       accuracy: true,
       previousAccuracy: true,
+      errorRate: true,
+      recentExposure: true,
       lastPracticedAt: true,
     },
   });
